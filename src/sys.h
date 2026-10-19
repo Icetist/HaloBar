@@ -95,6 +95,67 @@ bool FinishUpdate(); // at launch: clean up, true right after an update
 void SetEco(bool on); // efficiency mode + low memory priority while idle
 void SetAwake(bool on);  // keep display awake
 void OpenSnip();
+
+struct Stats { // astraeus island's: cpu, memory and gpu load, sampled on a timer
+    double cpu = 0;  // 0..1
+    double mem = 0;  // used fraction 0..1
+    double memUsedGb = 0, memTotalGb = 0;
+    double gpu = -1;  // -1 = no gpu counter
+    int threads = 0;  // logical cpus
+};
+
+class StatSrc {  // pimpl keeps pdh headers out of here
+public:
+    StatSrc();
+    ~StatSrc();
+    StatSrc(const StatSrc&) = delete;
+    StatSrc& operator=(const StatSrc&) = delete;
+    Stats Sample();  // delta since last call, call on a timer
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;  // null if init failed
+};
+
+struct WxHour {
+    int hour = 0;  // local hour of day
+    double tempC = 0;
+    int code = 0;
+    bool day = true;
+};
+
+struct WxDay {
+    int y = 0, m = 0, d = 0;
+    double hiC = 0, loC = 0;
+    int code = 0;
+};
+
+struct Wx {
+    bool valid = false;
+    double tempC = 0, highC = 0, lowC = 0;
+    int code = 0;  // wmo weather code
+    bool isDay = true;
+    std::wstring place;
+    WxHour hours[8];  // the next hours, from the one after now
+    int nHours = 0;
+    WxDay days[5];  // the days after today
+    int nDays = 0;
+};
+
+class WxSvc { // astraeus island's forecast: open-meteo, located once from the ip, cached half an hour
+public:
+    WxSvc();
+    ~WxSvc();
+    WxSvc(const WxSvc&) = delete;
+    WxSvc& operator=(const WxSvc&) = delete;
+    void Refresh(HWND notify, UINT msg);  // no-op while cached or busy
+    Wx Get() const;  // thread-safe snapshot
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
+
+std::wstring ReadText(const wchar_t* name); // the bar's own text setting, else island's: the weather's place is shared with it
+void SaveText(const wchar_t* name, const std::wstring& value); // the bar's own key only
 void OpenUri(const wchar_t* uri);
 
 }

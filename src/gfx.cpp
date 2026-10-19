@@ -1,4 +1,5 @@
 #include "gfx.h"
+#include "glyphs.h"
 
 #include <d2d1_1helper.h>
 #include <d2d1effects.h>
@@ -6,6 +7,7 @@
 #include <d3d11.h>
 #include <dxgi1_3.h>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -193,13 +195,39 @@ void GiveBack() {
     SetProcessWorkingSetSizeEx(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1, 0); // then trim what's left idle
 }
 
+ComPtr<IWICBitmapSource> FromShellBitmap(HBITMAP hb) { // usually premultiplied, but some icons come straight: taken as premultiplied, their edges glow white
+    WICBitmapAlphaChannelOption opt = WICBitmapUsePremultipliedAlpha;
+    DIBSECTION ds{};
+    if (GetObjectW(hb, sizeof(ds), &ds) == sizeof(ds) && ds.dsBm.bmBits && ds.dsBm.bmBitsPixel == 32) {
+        const uint8_t* p = static_cast<const uint8_t*>(ds.dsBm.bmBits);
+        size_t n = (size_t)ds.dsBm.bmWidthBytes * (size_t)std::abs(ds.dsBm.bmHeight);
+        bool straight = false, alpha = false;
+        for (size_t i = 0; i + 3 < n; i += 4) {
+            alpha = alpha || p[i + 3] != 0;
+            straight = straight || p[i] > p[i + 3] || p[i + 1] > p[i + 3] || p[i + 2] > p[i + 3]; // a color brighter than its coverage: not premultiplied
+        }
+        opt = !alpha ? WICBitmapIgnoreAlpha : straight ? WICBitmapUseAlpha : WICBitmapUsePremultipliedAlpha; // no alpha at all: an old opaque icon
+    }
+    ComPtr<IWICBitmap> bmp, baked;
+    ComPtr<IWICBitmapSource> pb;
+    if (FAILED(g->wic->CreateBitmapFromHBITMAP(hb, nullptr, opt, &bmp)) || FAILED(WICConvertBitmapSource(GUID_WICPixelFormat32bppPBGRA, bmp.Get(), &pb))) return nullptr;
+    if (FAILED(g->wic->CreateBitmapFromSource(pb.Get(), WICBitmapCacheOnLoad, &baked))) return pb;
+    return baked;
+}
+
 ID2D1Factory3* D2D() { return g->d2d.Get(); }
 IDWriteFactory5* DWrite() { return g->dw.Get(); }
 IWICImagingFactory* Wic() { return g->wic.Get(); }
 
 IDWriteTextFormat* TextFmt(Weight weight, float size, Align align) {
     uint64_t key = (uint64_t)weight << 40 | (uint64_t)(size * 10) << 8 | (uint64_t)align << 1; // size in 0.1 steps
-    return Cached(key, g->textFonts.Get(), g->textFam, (DWRITE_FONT_WEIGHT)weight, size, ToDw(align));
+    return Cached(key, g->textFonts.Get(), g->textFam, (DWRITE_FONT_WEIGHT)weight, size, ToDw(align)); // outfit, as astraeus island; windows' own face if the embedded one failed
+}
+
+
+IDWriteTextFormat* SysIconFmt(float size) { // windows' own icon font: the glyphs our subset doesn't carry
+    uint64_t key = (1ull << 61) | (uint64_t)(size * 10) << 8;
+    return Cached(key, nullptr, L"Segoe Fluent Icons", DWRITE_FONT_WEIGHT_NORMAL, size, DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
 IDWriteTextFormat* IconFmt(float size, bool filled) {
@@ -473,8 +501,9 @@ void Canvas::TextSp(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float
 }
 
 void Canvas::Icon(int glyph, D2D1_POINT_2F center, float size, Color c, bool filled) {
-    wchar_t ch = (wchar_t)glyph; // codepoints are bmp, fits one wchar
-    IDWriteTextFormat* f = gfx::IconFmt(size, filled);
+    wchar_t ch = (wchar_t)(glyph & 0xFFFF); // codepoints are bmp, fits one wchar
+    bool sys = glyph >= glyph::kSys; // flagged: windows' segoe fluent icons, drawn a touch smaller to sit with ours
+    IDWriteTextFormat* f = sys ? gfx::SysIconFmt(size * 0.82f) : gfx::IconFmt(size, filled);
     if (!f) return;
     D2D1_RECT_F r = {center.x - size, center.y - size, center.x + size, center.y + size}; // 2x box, centered format does the rest
     rt->DrawTextW(&ch, 1, f, r, Brush(c), D2D1_DRAW_TEXT_OPTIONS_NONE);

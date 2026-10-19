@@ -81,6 +81,13 @@ Settings Load() {
     s.customBg = Read(kBarKey, L"CustomBg", s.customBg) & 0xFFFFFF;
     s.size = num(L"Size", s.size, 0, 2);
     s.room = num(L"Room", s.room, 0, 1);
+    s.widgets = Read(kBarKey, L"Widgets", s.widgets) & 0x3FF;
+    s.mods = Read(kBarKey, L"Mods", s.mods) & 0xFFF;
+    if (Read(kBarKey, L"ModsV", 1) < 2) { // show desktop came after the rest: settings saved before it get it switched on, once
+        s.mods |= 1 << 11;
+        SaveNum(L"Mods", s.mods);
+        SaveNum(L"ModsV", 2);
+    }
     s.launcher = num(L"Launcher", s.launcher, 0, 1);
     s.pills = num(L"Pills", s.pills, 0, 1);
     s.song = num(L"Song", s.song, 0, 1);
@@ -118,5 +125,22 @@ void SaveNum(const wchar_t* name, int v) {
 }
 
 void Delete(const wchar_t* name) { RegDeleteKeyValueW(HKEY_CURRENT_USER, kBarKey, name); }
+
+}
+
+namespace sys { // text settings for the code shared with island: the bar's key first, island's as a fallback, written only to the bar's
+
+std::wstring ReadText(const wchar_t* name) {
+    for (const wchar_t* key : {prefs::kBarKeyPath, prefs::kIslandKeyPath}) {
+        wchar_t buf[512] = {}; // the widget layout is the longest
+        DWORD size = sizeof(buf);
+        if (RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_SZ, nullptr, buf, &size) == ERROR_SUCCESS) return buf;
+    }
+    return {};
+}
+
+void SaveText(const wchar_t* name, const std::wstring& value) {
+    RegSetKeyValueW(HKEY_CURRENT_USER, prefs::kBarKeyPath, name, REG_SZ, value.c_str(), (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+}
 
 }

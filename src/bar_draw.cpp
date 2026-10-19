@@ -4,6 +4,7 @@
 #include <cwctype>
 
 #include "glyphs.h"
+#include "overflow.h"
 
 #include <psapi.h>
 #include <shellapi.h>
@@ -30,7 +31,7 @@ float Bar::TrayRise() const {
 }
 
 bool Bar::StepSprings(float dt) {
-    callSpring.target = tasks && tasks->Calling() >= 0 ? kCallRise : 0; // an app flashing for attention
+    callSpring.target = 0; // an app flashing for attention: its dock icon says so, nothing drops down
     peekSpring.target = pillUp && !AnyOpen() ? kPeekRise : 0; // a panel opening puts the pill away
     mediaSpring.target = mediaOpen && hasTrack ? kMediaRise : 0; // the player folds away when the song ends
     traySpring.target = trayOpen ? TrayRise() : 0;
@@ -39,7 +40,8 @@ bool Bar::StepSprings(float dt) {
     qsSpring.target = qsOpen ? QuickRise() : 0;
     calSpring.target = calOpen ? CalRise() : 0;
     launchSpring.target = launchOpen ? LaunchRise() : 0;
-    for (anim::Spring* s : {&peekSpring, &callSpring, &mediaSpring, &traySpring, &setSpring, &sheetSpring, &qsSpring, &calSpring, &launchSpring})
+    wgSpring.target = wgOpen ? WidgetRise() : 0;
+    for (anim::Spring* s : {&peekSpring, &callSpring, &mediaSpring, &traySpring, &setSpring, &sheetSpring, &qsSpring, &calSpring, &launchSpring, &wgSpring})
         s->damp = s->target > 0 ? (look.reduceMotion ? 1.0f : 0.62f) : 0.92f; // island's feel: a little bounce opening, a calm settle closing
     bool a = callSpring.Step(dt) | peekSpring.Step(dt); // bitwise, so both always step; || would skip the second
     bool b = mediaSpring.Step(dt);
@@ -49,87 +51,85 @@ bool Bar::StepSprings(float dt) {
     bool f = qsSpring.Step(dt);
     bool g = calSpring.Step(dt);
     bool h = launchSpring.Step(dt);
-    return a || b || c || d || e || f || g || h; // any still moving keeps frames coming
+    bool i = wgSpring.Step(dt);
+    return a || b || c || d || e || f || g || h || i; // any still moving keeps frames coming
 }
 
 bool Bar::Layout(float dt) {
-    float hideTo = AutoHide() && covered && !peek && !AnyOpen() && !card.Shown() && !Inside(Outer(), input.mouse) ? 1.0f : 0.0f; // hides only when nothing needs it
+    // the dock hides while a window overlaps it; the toolbar always stays
+    float hideTo = AutoHide() && covered && !peek && !(AnyOpen() && !cardDown) && !card.Shown() && !Inside(wegHit, input.mouse) ? 1.0f : 0.0f;
     bool sinking = anim::Approach(sink, hideTo, hideTo > 0 ? 7.0f : 12.0f, dt); // slips away gently, comes back quick
-    float floorY = winH - kGap + sink * (kRowH + 6); // tucked: the whole island below the screen's edge
-    rowTop = floorY - kRowH;
-    float cy = rowTop + kRowH / 2;
+    // the top bar: off, or slipping up while a window reaches under it, back when the mouse touches the top edge
+    float topTo = TopAuto() && topCovered && !topPeek && !(AnyOpen() && cardDown) && !Inside(capL, input.mouse) && !Inside(capR, input.mouse) ? 1.0f : 0.0f;
+    if (!TopOn()) topSink = 1;
+    else sinking = anim::Approach(topSink, topTo, topTo > 0 ? 7.0f : 12.0f, dt) || sinking;
+    float lift = topSink * (kBarH + 2);
+    barR = TopOn() ? D2D1_RECT_F{0, -lift, W, kBarH - lift} : D2D1_RECT_F{};
+    sinking = anim::Approach(shadeTopNow, shadeTop, 5, dt) || sinking; // the glass smokes and clears gently
+    sinking = anim::Approach(shadeBotNow, shadeBot, 5, dt) || sinking;
 
     bool showMedia = cfg.song && hasTrack && !track.title.empty();
     std::wstring key = showMedia ? track.title + L"\n" + track.artist : L""; // a newline can't appear in either, so the pair is unambiguous
     if (showMedia && key != mediaMeasured) { // sized to the song, measured once per song
         mediaMeasured = key;
-        float w = (std::max)(TextW(track.title, Weight::Medium, 12), TextW(track.artist, Weight::Light, 10.5f));
-        mediaTextW = (std::clamp)(w + 2, 50.0f, 140.0f); // a long title scrolls instead of eating the dock
+        std::wstring line = track.artist.empty() ? track.title : track.title + L" - " + track.artist;
+        mediaTextW = (std::clamp)(TextW(line, Weight::Regular, kBarText) + 2, 40.0f, 220.0f); // a long one is cut with an ellipsis
     }
     bool moving = anim::Approach(mediaShow, showMedia ? 1.0f : 0.0f, 10, dt) || sinking;
 
-    int nTray = TrayCount();
-    float trayW = nTray > 0 ? kTrayBtn : 0;
-    float songW = (kArt + 8 + mediaTextW + 10 + kBarsW) * mediaShow; // art, title, mini visualizer; scaled so it grows in and out
-    float songGap = 10 * mediaShow; // breathing room instead of a divider, as island's pill
-    float statusW = StatusW();
-    float langW = lang.empty() ? 0 : kLangW;
-    float fixed = kPadX + songW + songGap + kSlot + trayW + 2 + langW + statusW + 4 + kClockW + 6 + kDeskW + kPadX; // everything but the apps; kSlot is the start button
+    // the dock: start, show desktop, a separator, the apps, a separator, the recycle bin, the song; it packs closer before any app is left out
     int apps = tasks ? (int)tasks->Apps().size() : 0;
-    float room = W - 60 - 2 * kFillet - fixed; // what the screen leaves for apps
-    slotW = apps > 0 ? (std::clamp)(room / apps, kSlotMin, kSlot) : kSlot; // a crowded row packs its apps closer before any is left out
-    dockCount = (std::clamp)((int)(room / slotW), 0, apps); // the rest wait in the app sheet
-    float want = fixed + dockCount * slotW;
+    float others = 0; // everything but the apps: start, the widgets with a gap after each (the apps' too), the status and show desktop
+    for (const WgSlot& s : wgSlots) others += (s.kind == kWgApps ? 0 : WidgetW(s.kind, s.size)) + kWegGap;
+    float ends = 2 * kWegPad + kSlot + kWegSep + others + (editing ? kIcon + kWegGap : 0) + (TopOn() ? 0 : kWegSep + statusW);
+    float room = W - 2 * kIcon - ends; // the screen's edges keep a margin
+    slotW = apps > 0 ? (std::clamp)(room / apps, kSlotMin, kAppSlot) : kAppSlot;
+    dockCount = (std::clamp)((int)(room / slotW), 0, apps);
+    if (dockCount < apps) dockCount = (std::clamp)((int)((room - kIcon - kWegGap) / slotW), 0, apps); // not all fit: one spot goes to the "+N" tile
+    moreN = apps - dockCount;
+    appsW = (dockCount > 0 ? dockCount * slotW - kWegGap : 0) + (moreN > 0 ? (dockCount > 0 ? kWegGap : 0) + kIcon : 0);
+    float want = ends + appsW;
     if (rowW <= 0) rowW = want; // first frame: no ease in from nothing
     moving = anim::Approach(rowW, want, 14, dt) || moving;
+    float floorY = winH - kWegMargin + sink * (kWegH + kWegMargin + 4); // tucked: the whole dock below the screen's edge
+    rowTop = floorY - kWegH;
+    wegR = {W / 2 - rowW / 2, rowTop, W / 2 + rowW / 2, floorY};
+    wegHit = {wegR.left, rowTop, wegR.right, winH}; // down to the screen's edge, so the mouse can rest there
 
-    // growing up into the player, the tray, settings or a call also widens the island, as far as that needs
-    float open = anim::Clamp01(mediaSpring.value / kMediaRise), call = anim::Clamp01(CallH() / kCallRise), pk = anim::Clamp01(PeekH() / kPeekRise);
+    // a dropdown: laid out where it always grew, centered and rising from rowTop; cardOff hangs it under the toolbar, or over the dock
+    float open = anim::Clamp01(mediaSpring.value / kMediaRise), pk = anim::Clamp01(PeekH() / kPeekRise);
     float tr = anim::Clamp01(traySpring.value / TrayRise()), set = anim::Clamp01(setSpring.value / kSetRise);
     float sheet = anim::Clamp01(sheetSpring.value / SheetRise());
     float qs = anim::Clamp01(qsSpring.value / QuickRise()), cal = anim::Clamp01(calSpring.value / CalRise()), ln = anim::Clamp01(launchSpring.value / LaunchRise());
-    float gridW = (std::clamp)(nTray, 1, kTrayCols) * kTrayCell + 40; // the tray grid, with its margins
-    float wide = rowW; // never narrower than the resting row
-    for (auto [to, k] : {std::pair{kMediaW, open}, std::pair{kCallW, call}, std::pair{kPeekW, pk}, std::pair{gridW, tr}, std::pair{(std::min)(kSetW, W - 24), set}, std::pair{kSheetW, sheet}, std::pair{kQsW, qs}, std::pair{kCalW, cal}, std::pair{kLaunchW, ln}})
-        if (to > rowW) wide = (std::max)(wide, rowW + (to - rowW) * k); // widens in step with how far that panel has risen
-    pill = {W / 2 - wide / 2, rowTop - Grown(), W / 2 + wide / 2, floorY}; // always centered on the screen
-
-    float left = W / 2 - rowW / 2, right = W / 2 + rowW / 2; // song and apps from the left, tray and clock from the right
-    mediaR = Rect(left + kPadX, cy - 17, songW, 34);
-    startR = Rect(left + kPadX + songW + songGap, cy - kSlot / 2, kSlot, kSlot);
-    dockX = startR.right;
-    deskR = Rect(right - kPadX + 6 - kDeskW, cy - 15, kDeskW, 30); // the far end of the island, as windows' far corner
-    clockR = Rect(deskR.left - 12 - kClockW, cy - 17, kClockW, 34);
-    statusR = Rect(clockR.left - 4 - statusW, cy - 15, statusW, 30);
-    langR = Rect(statusR.left - langW, cy - 15, langW, 30);
-    trayR = Rect(langR.left - 2 - trayW, cy - kTrayBtn / 2, trayW, kTrayBtn);
+    float wg = anim::Clamp01(wgSpring.value / WidgetRise());
+    float gridW = (std::clamp)(TrayCount(), 1, kTrayCols) * kTrayCell + 40; // the tray grid, with its margins
+    float wide = 0, openK = 0;
+    for (auto [to, k] : {std::pair{kMediaW, open}, std::pair{kPeekW, pk}, std::pair{gridW, tr}, std::pair{(std::min)(kSetW, W - 24), set}, std::pair{kSheetW, sheet},
+                         std::pair{kQsW, qs}, std::pair{kCalW, cal}, std::pair{kLaunchW, ln}, std::pair{WidgetPanelW(), wg}})
+        if (k > 0.001f) wide = (std::max)(wide, to * (0.25f + 0.75f * k)), openK = (std::max)(openK, k); // grows out of its icon: narrow at first, full width once up
+    float grown = Grown();
+    if (!AnyOpen() && grown - PeekH() - CallH() < 0.5f) cardDown = true, anchorX = W - 8 - kPeekW / 2; // a notification arrives in the top right corner; a closing popup keeps its place until it's gone
+    pill = grown > 0.5f && wide > 1 ? D2D1_RECT_F{W / 2 - wide / 2, rowTop - grown, W / 2 + wide / 2, rowTop} : D2D1_RECT_F{};
+    float cx = (std::clamp)(anchorX, wide / 2 + 8, (std::max)(wide / 2 + 8, W - wide / 2 - 8)); // kept on screen
+    float cardWant = anchorX + (cx - anchorX) * openK; // centered on the icon while it's small, sliding to where it fits as it opens
+    if (grown < 0.5f || cardX == 0) cardX = cardWant; // nothing showing: it starts on the icon
+    else moving = anim::Approach(cardX, cardWant, 22, dt) || moving; // moved to another module while open: it glides there
+    cardOff = {cardX - W / 2, cardDown ? kCardTop - pill.top : -10.0f};
     return moving;
 }
 
-void Bar::DrawDividers(const Theme& t) {
-    constexpr float kDivH = 22; // shorter than the row's buttons: a pause between groups, not a wall
-    float cy = (startR.top + startR.bottom) / 2, dockEnd = dockX + dockCount * slotW;
-    Color ink = t.text.Alpha(0.2f);
-    auto line = [&](float x) { canvas->Line({std::round(x * scale) / scale, cy - kDivH / 2}, {std::round(x * scale) / scale, cy + kDivH / 2}, ink, 1); };
-    if (mediaR.right > mediaR.left + 1) line((mediaR.right + startR.left) / 2); // the song, then the apps
-    line((dockEnd + trayR.left) / 2); // the apps, then the tray
-    line((statusR.right + clockR.left) / 2); // the status, then the time
-}
-
-void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // island's own paint: the fill alone, glass adds its light; no rim, the bezel is the edge
+void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // a panel: island's material, its gloss and rim
     if (!shape) return;
     Canvas& c = *canvas;
-    D2D1_RECT_F o = Outer();
-    c.FillGeometry(shape, t.bg); // dark: black, melting into the screen's bezel
-    if (float k = glassShade * anim::Clamp01(Grown() / 40); t.glass && k > 0.01f) c.FillGeometry(shape, Color{0, 0, 0, 0.42f * k}); // smoked glass over a bright page, only where it grew
+    c.FillGeometry(shape, t.bg);
     if (!t.glass) return;
-    float h = Height(pill); // liquid glass: glossy light from the top, light caught where it meets the bezel, a bright rim
-    c.FillGeoV(shape, {o.left, pill.top, o.right, pill.top + (std::min)(h, 90.0f)}, t.sheen, t.sheen.Alpha(0)); // the gloss fades out within 90 dips, however tall
-    c.FillGeoV(shape, {o.left, pill.bottom - (std::min)(h * 0.5f, 34.0f), o.right, pill.bottom}, Color{1, 1, 1, 0}, Color{1, 1, 1, 0.09f}); // light caught at the bottom edge
-    c.StrokeGeo(shape, Color{1, 1, 1, 0.26f}, 1.2f); // the bright rim
+    if (glassShade > 0.01f) c.FillGeometry(shape, Color{0.02f, 0.02f, 0.04f, 0.45f * glassShade}); // smoked over a white page
+    D2D1_RECT_F o = pill; // island's glass: gloss from the top, a bright rim
+    c.FillGeoV(shape, {o.left, o.top, o.right, o.top + (std::min)(Height(o), 90.0f)}, t.sheen, t.sheen.Alpha(0));
+    c.StrokeGeo(shape, Color{1, 1, 1, 0.26f}, 1.2f);
 }
 
-ComPtr<ID2D1Geometry> Bar::Shape() const { // island's silhouette turned upside down: it rises out of the bottom edge with concave shoulders
+ComPtr<ID2D1Geometry> Bar::Shape() const { // the open dropdown's outline, in its own layout
     if (pill.right <= pill.left) return nullptr;
     if (shapeCache && std::fabs(pill.left - shapeFor.left) < 0.01f && std::fabs(pill.top - shapeFor.top) < 0.01f && std::fabs(pill.right - shapeFor.right) < 0.01f &&
         std::fabs(pill.bottom - shapeFor.bottom) < 0.01f)
@@ -140,23 +140,10 @@ ComPtr<ID2D1Geometry> Bar::Shape() const { // island's silhouette turned upside 
 }
 
 ComPtr<ID2D1Geometry> Bar::BuildShape() const {
-    ComPtr<ID2D1PathGeometry> path;
-    ComPtr<ID2D1GeometrySink> s;
-    if (FAILED(gfx::D2D()->CreatePathGeometry(&path)) || FAILED(path->Open(&s))) return nullptr;
-    float h = Height(pill), f = (std::min)(kFillet, h / 2), r = (std::min)(kCorner, h / 2); // short: radii shrink so the arcs never overlap
-    float xl = pill.left, xr = pill.right, top = pill.top, fl = pill.bottom;
-    s->BeginFigure({xl - f, fl}, D2D1_FIGURE_BEGIN_FILLED); // starts outside the pill: the shoulders flare past it
-    s->AddLine({xr + f, fl}); // along the screen's bottom edge
-    s->AddArc({{xr, fl - f}, {f, f}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL}); // concave shoulder, rising out of the bezel
-    s->AddLine({xr, top + r});
-    s->AddArc({{xr - r, top}, {r, r}, 0, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL}); // round free corner
-    s->AddLine({xl + r, top});
-    s->AddArc({{xl, top + r}, {r, r}, 0, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_SMALL});
-    s->AddLine({xl, fl - f});
-    s->AddArc({{xl - f, fl}, {f, f}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL}); // the left shoulder, back to the start
-    s->EndFigure(D2D1_FIGURE_END_CLOSED);
-    s->Close();
-    return path;
+    ComPtr<ID2D1RoundedRectangleGeometry> g;
+    float r = (std::min)(CardRadius(), Height(pill) / 2);
+    if (FAILED(gfx::D2D()->CreateRoundedRectangleGeometry({pill, r, r}, &g))) return nullptr;
+    return g;
 }
 
 const TaskApp* Bar::FindApp(const std::wstring& key) const {
@@ -175,29 +162,21 @@ float Bar::TextW(const std::wstring& s, Weight w, float size) {
     return m.widthIncludingTrailingWhitespace;
 }
 
-void Bar::DrawApp(const TaskApp* a, const D2D1_RECT_F& r, float alpha, const Theme& t) {
+void Bar::DrawApp(const TaskApp* a, const D2D1_RECT_F& r, float alpha, const Theme& t, UINT px) {
     if (alpha <= 0.01f || Width(r) < 1) return; // invisible: skip the icon lookup too
     Canvas& c = ui.C();
-    if (ID2D1Bitmap* bmp = a ? icons.Get(ctx.Get(), *a, IconPx()) : nullptr) { // cached per app, at the device pixel size
+    if (ID2D1Bitmap* bmp = a ? icons.Get(ctx.Get(), *a, px ? px : IconPx()) : nullptr) { // cached per app, at the largest pixel size asked for
         c.Pixels(bmp, r, alpha);
+        return;
+    }
+    if (a && icons.Pending(a->key)) { // still being read: a faint plate where it'll be
+        c.Fill(r, Width(r) * 0.3f, t.text.Alpha(0.06f * alpha));
         return;
     }
     c.Fill(r, Width(r) * 0.3f, t.cardHi.Alpha(alpha)); // no icon anywhere: its initial on a tile
     std::wstring letter(1, a && !a->name.empty() ? (wchar_t)std::towupper(a->name[0]) : L'?');
     float h = Height(r);
     c.Text(letter, Rect(r.left, r.top + h * 0.16f, Width(r), h * 0.75f), Weight::Semi, h * 0.5f, t.accentHi.Alpha(alpha), Align::Center);
-}
-
-void Bar::DrawStart(const Theme& t) {
-    Canvas& c = ui.C();
-    uint32_t id = Ui::Id("start");
-    Ui::Hit h = ui.Button(id, startR);
-    float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
-    if (hov > 0.01f) c.Fill(Inset(startR, 2, 2), Height(startR) / 2 - 2, t.text.Alpha(0.09f * hov)); // island's hover: a capsule of faint ink
-    float size = 19 * (h.down ? 0.86f : 1.0f) * (1 + 0.08f * hov); // swells on hover, presses in on click
-    WinLogo({(startR.left + startR.right) / 2, (startR.top + startR.bottom) / 2}, size, t.accentHi.Mix(Color{1, 1, 1, 1}, 0.15f * hov), t.accent);
-    if (h.clicked) launchOpen ? SetPanel(Panel::None) : cfg.launcher ? OpenLauncher() : StartMenu(); // halobar's launcher, or windows' start if chosen
-    if (input.rclick && Inside(startR, input.mouse)) menuWanted = true; // the bar's own menu, shown after the frame
 }
 
 void Bar::WinLogo(D2D1_POINT_2F o, float size, Color top, Color bottom) { // the windows logo: four panes
@@ -235,20 +214,31 @@ ID2D1Bitmap* Bar::IconBitmap(HICON icon, uint64_t key, uint64_t ver) {
     return b.bmp.Get();
 }
 
-void Bar::DrawTrayButton(const Theme& t) { // the mini tray: every icon lives in the grid it opens, the row stays clean
-    if (!tray || Width(trayR) < 1) return; // no tray icons: Layout gave it no width
-    Canvas& c = ui.C();
-    uint32_t id = Ui::Id("tray.more");
-    Ui::Hit h = ui.Button(id, trayR);
-    float hov = ui.Smooth(id + 1, h.hover || trayOpen ? 1.0f : 0, 16);
-    if (hov > 0.01f) c.Fill(trayR, Width(trayR) / 2, t.text.Alpha(0.09f * hov));
-    float cx = (trayR.left + trayR.right) / 2, cy = (trayR.top + trayR.bottom) / 2;
-    float flip = ui.Smooth(id + 2, trayOpen ? 1.0f : 0, 14), d = 3 * (1 - 2 * flip); // the chevron turns over as it opens
-    Color ink = t.textDim.Mix(t.text, hov);
-    c.Line({cx - 4.5f, cy + d}, {cx, cy - d}, ink, 2);
-    c.Line({cx, cy - d}, {cx + 4.5f, cy + d}, ink, 2); // island's chevron weight
-    if (h.clicked) SetTrayOpen(!trayOpen);
-    if (input.rclick && Inside(trayR, input.mouse)) menuWanted = true;
+void Bar::OpenOverflow() {
+    if (overflowUp || overflow::Shown()) return overflow::Close(); // a second click puts it away, as windows' chevron
+    SetPanel(Panel::None); // one thing open at a time
+    bool dock = !TopOn(); // the tray sits in the dock: the flyout rises over it instead
+    float cx = (trayR.left + trayR.right) / 2;
+    POINT anchor = ToScreen({cx, dock ? wegR.top : capR.bottom});
+    int edge = ToScreen({0, dock ? wegR.top - 8 : kCardTop}).y; // just under the top bar, or just over the dock, as the panels
+    overflowFore = GetForegroundWindow();
+    if (overflow::Open(anchor, edge, !dock)) return; // shown and placed once explorer says so: Tasks::kOverflow
+    Anchor(cx, !dock);
+    SetTrayOpen(true); // explorer's hidden icon menu is off: the bar's own grid instead
+}
+
+void Bar::SyncPromoted() {
+    bool changed = overflow::PromotedChanged();
+    uint64_t set = 1469598103934665603ull; // fnv over the icons' keys: the list is worked out again only when they change
+    if (tray)
+        for (const TrayItem& it : tray->Items())
+            if (it.Shown()) set = (set ^ it.key) * 1099511628211ull;
+    if (!changed && set == promotedFor) return;
+    promotedFor = set;
+    promoted.clear();
+    if (tray)
+        for (const TrayItem& it : tray->Items())
+            if (it.Shown() && overflow::Promoted(it.owner, it.id)) promoted.push_back(it.key);
 }
 
 void Bar::DrawTrayGrid(const Theme& t, ID2D1Geometry* shape) {
@@ -345,31 +335,6 @@ void Bar::DrawCalling(const Theme& t, ID2D1Geometry* shape) {
     rt->PopLayer();
 }
 
-void Bar::DrawClock(const Theme& t) {
-    Canvas& c = ui.C();
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    wchar_t tm[32] = {}, day[48] = {};
-    const wchar_t* fmt = cfg.clock24 == 1 ? L"HH:mm" : cfg.clock24 == 0 ? L"h:mm tt" : nullptr; // follow: the user's own windows format
-    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, fmt ? 0 : TIME_NOSECONDS, &st, fmt, tm, 32);
-    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"ddd d MMM", day, 48, nullptr); // a fixed short shape; names still come in the user's language
-    float cy = rowTop + kRowH / 2;
-    uint32_t id = Ui::Id("clock");
-    D2D1_RECT_F hit = Inset(clockR, -6, 0);
-    Ui::Hit h = ui.Button(id, hit); // the calendar grows out of the clock
-    float hov = ui.Smooth(id + 1, h.hover || calOpen ? 1.0f : 0, 16);
-    if (hov > 0.01f) c.Fill(hit, Height(hit) / 2, t.text.Alpha(0.09f * hov));
-    if (h.clicked) SetPanel(calOpen ? Panel::None : Panel::Calendar);
-    D2D1_RECT_F r = Rect(clockR.left - 24, 0, Width(clockR) + 24, 0); // flush with the inset, as the song is on the left
-    if (!cfg.date) { // time alone: a touch larger, centered on the row
-        c.Text(tm, Rect(r.left, cy - 10, Width(r), 20), Weight::Medium, 14, t.text, Align::Right);
-        return;
-    }
-    c.Text(tm, Rect(r.left, cy - 16, Width(r), 18), Weight::Medium, 13.5f, t.text, Align::Right);
-    c.Text(day, Rect(r.left, cy + 1, Width(r), 14), Weight::Light, 10.5f, t.textDim, Align::Right);
-    if (notifUnread) c.Dot({clockR.right + 3, cy - 12}, 3, t.accentHi); // something new in the notifications
-}
-
 void Bar::SyncGhosts() { // read when the tray opens and once after start: never on a timer
     std::vector<Ghost> keep;
     std::unordered_set<std::wstring> running, owned;
@@ -430,17 +395,6 @@ void Bar::SyncGhosts() { // read when the tray opens and once after start: never
     bool changed = keep.size() != ghosts.size();
     ghosts = std::move(keep);
     if (changed) Redraw();
-}
-
-void Bar::DrawDesktopBtn(const Theme& t) { // a sliver at the island's end: click it and every window steps aside, again to bring them back
-    Canvas& c = ui.C();
-    uint32_t id = Ui::Id("desk");
-    Ui::Hit h = ui.Button(id, Inset(deskR, -3, 0));
-    float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
-    float cx = (deskR.left + deskR.right) / 2;
-    if (hov > 0.01f) c.Fill(Inset(deskR, 0, 3), Width(deskR) / 2, t.text.Alpha(0.07f * hov));
-    c.Line({cx, deskR.top + 10 - 2 * hov}, {cx, deskR.bottom - 10 + 2 * hov}, t.textLow.Alpha(0.35f + 0.5f * hov), 1.2f); // a hairline, there when you look for it
-    if (h.clicked) ShowDesktop();
 }
 
 void Bar::DrawPeek(const Theme& t, ID2D1Geometry* shape) {

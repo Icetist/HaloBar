@@ -1,5 +1,5 @@
-// The apps in the row, pinned ones first as on the windows taskbar: click, drag to reorder or pin, and right click
-// for the island to grow into that app's sheet: its windows, a new one, pin or unpin, close them all.
+// The apps in the dock, pinned ones first as on the windows taskbar: click, drag to reorder or pin, and right click
+// for that app's sheet over it: its windows, a new one, pin or unpin, close them all.
 #include "bar.h"
 
 #include <shellapi.h>
@@ -54,14 +54,14 @@ void Bar::DrawProgress(const Badge& b, float cx, float y, float w, float grow, c
     c.Fill(Rect(lane.left, y, (std::max)(3.0f, w * b.value), 3), 1.5f, ink.Alpha(grow)); // never thinner than its rounded ends, so 0% still shows
 }
 
-void Bar::DrawDock(const Theme& t) {
-    if (!tasks) return; // no task tracking yet: the row is empty
+void Bar::DrawDock(const Theme& t) { // the apps in the dock: wegX and wegS (DrawWeg) say where each sits and how magnified it is
+    if (!tasks) return; // no task tracking yet: the dock is empty
     Canvas& c = ui.C();
     const auto& apps = tasks->Apps();
-    int n = (std::min)(dockCount, (int)apps.size()), pinned = tasks->PinCount(); // dockCount is what Layout() made room for
+    int n = (std::min)({dockCount, (int)apps.size(), (int)wegX.size()}), pinned = tasks->PinCount();
     HWND fore = tasks->Fore();
-    float cy = rowTop + kRowH / 2;
-    bool pulsing = ui.Now() - callSince < kPulseSec; // after that a calling app keeps its bright dash but stops costing frames
+    float tileTop = rowTop + kWegPad; // each app's spot, the same size as every other item's
+    bool pulsing = ui.Now() - callSince < kPulseSec; // after that a calling app keeps its bright dot but stops costing frames
 
     if (dragFrom >= n) dragFrom = -1, dragging = false; // the app went while held
     int drop = -1; // where the dragged app would land
@@ -82,27 +82,29 @@ void Bar::DrawDock(const Theme& t) {
             if (slot >= drop) ++slot;
         }
         float grow = ui.SmoothFrom(id + 1, 1, 0, 14); // a new app opens up its slot
-        float sx = ui.Smooth(id + 2, dockX + slot * slotW, 16); // and the others slide when apps come and go
+        float w = wegW[(size_t)slot];
+        float sx = ui.Smooth(id + 2, wegX[(size_t)slot], 22); // the others slide when apps come and go
         bool held = dragging && i == dragFrom;
-        if (held) sx = (std::clamp)(input.mouse.x - slotW / 2, dockX, dockX + (n - 1) * slotW); // the held one follows the mouse, kept inside the row
-        D2D1_RECT_F r = Rect(sx + 2, cy - slotW / 2 + 2, slotW - 4, slotW - 4);
+        if (held) sx = (std::clamp)(input.mouse.x - w / 2, wegX[0], wegX[(size_t)n - 1]); // the held one follows the mouse, kept inside the dock
+        D2D1_RECT_F r = Rect(sx, rowTop, w, kWegH);
         Ui::Hit h = ui.Button(id, r);
-        slots[a.key] = r;
         if (h.hover && !dragging) hovered = i;
         if (ui.IsActive(id) && input.down && !dragging && std::fabs(input.mouse.x - input.pressPos.x) > kDragStart && (a.pinned || pinned > 0 || n > 1))
             dragging = true, dragFrom = i; // a lone unpinned app has nowhere to go, so it never drags
         bool active = false, calling = false;
-        for (const auto& w : a.wins) {
-            active = active || w.hwnd == fore;
-            calling = calling || (w.flash && w.hwnd != fore); // a flash from the window in front is already seen
+        for (const auto& win : a.wins) {
+            active = active || win.hwnd == fore;
+            calling = calling || (win.flash && win.hwnd != fore); // a flash from the window in front is already seen
         }
-        float hov = ui.Smooth(id + 3, h.hover || held ? 1.0f : 0, 16);
         float act = ui.Smooth(id + 4, active ? 1.0f : 0, 14);
-        if (act > 0.01f) c.Fill(r, Width(r) / 2, t.accent.Alpha(0.13f * act * grow)); // the app in front sits on island's accent capsule
-        if (hov > 0.01f) c.Fill(r, Width(r) / 2, t.text.Alpha(0.09f * hov)); // hover: a capsule of faint ink, as island's buttons
-        float size = kIcon * grow * (h.down && !held ? 0.86f : 1.0f) * (1 + 0.06f * hov); // presses in when held down, swells a touch on hover
-        D2D1_RECT_F icon = Rect(sx + slotW / 2 - size / 2, cy - size / 2 - 1.5f - 1 * hov - (held ? 3 : 0), size, size); // lifted a little, more while dragged
-        DrawApp(&a, icon, grow, t);
+        float hov = ui.Smooth(id + 3, h.hover && !dragging ? 1.0f : 0, 18);
+        float cx = sx + w / 2, fade = grow * (held ? 0.5f : 1.0f); // the dragged one goes half see-through
+        D2D1_RECT_F tile = Rect(cx - kIcon / 2, tileTop, kIcon, kIcon);
+        DrawTile(t, tile, hov, fade);
+        float size = kAppIcon * grow * (h.down && !held ? 0.9f : 1.0f); // presses in when held down
+        D2D1_RECT_F icon = Rect(cx - size / 2, tileTop + kIcon / 2 - size / 2, size, size);
+        slots[a.key] = tile;
+        DrawApp(&a, icon, fade, t);
         if (float notch = ui.Wheel(r); notch != 0 && !a.exe.empty()) { // the wheel over an app turns that app's own volume
             std::wstring key = a.exe;
             for (auto& ch : key) ch = (wchar_t)towlower(ch); // the mixer's key: the lowercased exe path
@@ -118,9 +120,9 @@ void Bar::DrawDock(const Theme& t) {
         }
         if (wheelApp == a.key && ui.Now() - wheelAt < 1.4) { // its level as a ring around it, for a moment
             float k = anim::Clamp01((float)(1.4 - (ui.Now() - wheelAt)) / 0.3f); // fades over its last 0.3 s
-            D2D1_POINT_2F o = {(icon.left + icon.right) / 2, (icon.top + icon.bottom) / 2};
-            c.Ring(o, kIcon / 2 + 4, t.track.Alpha(k), 2.5f);
-            c.Arc(o, kIcon / 2 + 4, -1.5708f, 6.2832f * wheelVol, t.accentHi.Alpha(k), 2.5f);
+            D2D1_POINT_2F o = {cx, (icon.top + icon.bottom) / 2};
+            c.Ring(o, size / 2 + 3, t.track.Alpha(k), 2.5f);
+            c.Arc(o, size / 2 + 3, -1.5708f, 6.2832f * wheelVol, t.accentHi.Alpha(k), 2.5f);
             ui.KeepAlive();
         }
 
@@ -132,28 +134,45 @@ void Bar::DrawDock(const Theme& t) {
             if (auto u2 = unread.find(k); u2 != unread.end()) unreadN = u2->second;
         }
         if (unreadN > 0) {
-            D2D1_POINT_2F o = {icon.right - 1, icon.top + 2};
+            D2D1_POINT_2F o = {tile.right - 3, tile.top + 3};
             std::wstring num = unreadN > 9 ? L"9+" : std::to_wstring(unreadN); // two characters at most, to fit the corner
-            float bw = num.size() > 1 ? 18.0f : 14.0f; // a circle for one digit, a short pill for two
-            c.Fill(Rect(o.x - bw / 2, o.y - 7, bw, 14), 7, t.accent.Alpha(grow));
-            c.Text(num, Rect(o.x - bw / 2, o.y - 7, bw, 14), Weight::Semi, 9, t.onAccent.Alpha(grow), Align::Center);
+            float bw = num.size() > 1 ? 20.0f : 16.0f; // a circle for one digit, a short pill for two
+            c.Fill(Rect(o.x - bw / 2, o.y - 8, bw, 16), 8, t.accent.Alpha(grow)); // its notifications: an accent bead, top right
+            c.Text(num, Rect(o.x - bw / 2, o.y - 8, bw, 16), Weight::Semi, 10, t.onAccent.Alpha(grow), Align::Center);
         }
         const Badge* b = tasks->BadgeOf(a);
         if (b && b->overlay) { // the app's own badge on its icon's corner, as windows draws it; remade when its ver moves
-            if (ID2D1Bitmap* ov = IconBitmap(b->overlay, (uint64_t)id << 8 | 0xB, b->ver)) c.Image(ov, Rect(icon.right - 11, icon.bottom - 11, 13, 13), 0, grow);
+            if (ID2D1Bitmap* ov = IconBitmap(b->overlay, (uint64_t)id << 8 | 0xB, b->ver)) c.Image(ov, Rect(icon.right - 13, icon.bottom - 13, 15, 15), 0, grow);
         }
+        float dotY = tile.bottom + 4; // 3 under the tile, in the dock's padding
         if (b && b->state) {
-            DrawProgress(*b, sx + slotW / 2, cy + 15, slotW - 14, grow, t);
-        } else if (!a.wins.empty()) {
+            DrawProgress(*b, cx, tile.bottom - 5, kIcon - 10, grow, t); // over the tile's foot
+        }
+        if (!a.wins.empty()) { // running: a dot per window up to three; the app in front, one glowing accent bar; calling, it pulses
             float pulse = calling && pulsing ? 0.5f + 0.5f * std::sin((float)ui.Now() * 5) : 0;
             if (calling && pulsing) ui.KeepAlive();
-            float iw = ((a.wins.size() > 1 ? 6.0f : 3.0f) + 9 * act + 6 * pulse) * grow; // running, several windows, in front
-            Color ink = calling ? t.accentHi : t.textLow.Alpha(0.7f).Mix(t.accent, act);
-            c.Fill(Rect(sx + slotW / 2 - iw / 2, cy + 15.5f, iw, 2.5f), 1.25f, ink.Alpha(grow));
+            int dots = (int)(std::min)((size_t)3, a.wins.size());
+            Color ink = calling ? t.accentHi : t.text.Alpha(0.45f).Mix(t.accentHi, act);
+            if (act > 0.01f) c.Glow({cx, dotY}, 12 * act, 5 * act, t.accent.Alpha(0.5f * act * grow));
+            float bar = (10 + 6 * pulse) * act; // the dots draw together into one bar as it comes to the front
+            float span = (dots - 1) * 5.0f * (1 - act);
+            for (int k = 0; k < dots; ++k) {
+                float dx = dots > 1 ? -span / 2 + span * k / (dots - 1) : 0;
+                float iw = (3 + bar) * grow;
+                c.Fill(Rect(cx + dx - iw / 2, dotY - 1.5f, iw, 3), 1.5f, ink.Alpha(grow));
+            }
         }
         if (h.clicked && !dragged) clicked = i;
-        if (midClick && Inside(r, input.mouse)) launched = i; // middle click: a new window, as windows does
+        if (midClick && Inside(r, input.mouse)) launched = i; // middle click
         if (input.rclick && Inside(r, input.mouse)) sheet = i;
+    }
+    if (hovered >= 0 && !dragging && !card.Shown()) { // the app's name on a small pill over it
+        const D2D1_RECT_F& ic = slots[apps[hovered].key];
+        float tw = (std::min)(TextW(apps[hovered].name, Weight::Medium, 12) + 20, 300.0f), cx = (ic.left + ic.right) / 2;
+        D2D1_RECT_F tip = Rect(cx - tw / 2, wegR.top - 32, tw, 24);
+        c.Fill(tip, 12, t.bg.Alpha(1).Mix(t.text, 0.08f));
+        c.StrokeV(tip, 12, t.hairTop, t.hairBot, 1);
+        c.Text(apps[hovered].name, Inset(tip, 10, 0), Weight::Medium, 12, t.text, Align::Center);
     }
 
     if (dragging && input.released) { // dropped
@@ -188,8 +207,38 @@ void Bar::DrawDock(const Theme& t) {
     bool shift = GetKeyState(VK_SHIFT) < 0, ctrl = GetKeyState(VK_CONTROL) < 0;
     if (clicked >= 0 && shift) tasks->Launch(clicked, ctrl); // as windows: shift+click a new window, ctrl+shift+click one as administrator
     else if (clicked >= 0) tasks->Click(clicked);
-    if (launched >= 0) tasks->Launch(launched);
-    if (sheet >= 0) SetSheet(sheetOpen && sheetKey == apps[sheet].key ? L"" : apps[sheet].key); // a second right click on the same app closes it
+    if (launched >= 0 && !apps[launched].wins.empty()) { // middle click closes its window: the one used last
+        const TaskWin* last = &apps[launched].wins[0];
+        for (const auto& w : apps[launched].wins)
+            if (w.used > last->used) last = &w;
+        PostMessageW(last->hwnd, WM_SYSCOMMAND, SC_CLOSE, 0); // as its own close button: the app may still ask to save
+    } else if (launched >= 0) {
+        tasks->Launch(launched); // nothing open: middle click starts it
+    }
+    if (sheet >= 0) {
+        menuApp = apps[sheet].key;
+        PostMessageW(hwnd, WM_APP_MENU, 4, 0); // a menu runs its own loop: after the frame
+    }
+}
+
+void Bar::DrawApps(const Theme& t, const D2D1_RECT_F& r, bool live) { // live: the dock's apps as ever; in edit mode only their faces, the block moves as one
+    if (!tasks) return;
+    Canvas& c = ui.C();
+    const auto& apps = tasks->Apps();
+    int n = (std::min)(dockCount, (int)apps.size());
+    dockX = r.left;
+    for (int i = 0; i < n; ++i) wegX.push_back(r.left + i * slotW + (slotW - kIcon - kWegGap) / 2), wegW.push_back(kIcon), wegS.push_back(1);
+    if (live) DrawDock(t);
+    else
+        for (int i = 0; i < n; ++i) DrawApp(&apps[(size_t)i], Rect(wegX[(size_t)i] + kIcon / 2 - kAppIcon / 2, r.top + kIcon / 2 - kAppIcon / 2, kAppIcon, kAppIcon), 0.8f, t);
+    if (moreN <= 0) return;
+    D2D1_RECT_F m = Rect(r.right - kIcon, r.top, kIcon, kIcon); // the ones without room: how many, and a click away
+    uint32_t id = Ui::Id("weg.more");
+    Ui::Hit h = live ? ui.Button(id, m) : Ui::Hit{};
+    bool open = wgOpen && wgKind == kWgApps;
+    DrawTile(t, m, live ? ui.Smooth(id + 1, h.hover || open ? 1.0f : 0, 18) : 0, 1);
+    c.Text(L"+" + std::to_wstring(moreN), m, Weight::Semi, 13, open ? t.accentHi : t.text, Align::Center);
+    if (h.clicked) OpenWidget(kWgApps, (m.left + m.right) / 2);
 }
 
 void Bar::DrawSheet(const Theme& t, ID2D1Geometry* shape) {
@@ -267,7 +316,7 @@ void Bar::DrawSheet(const Theme& t, ID2D1Geometry* shape) {
         c.Text(acts[i].label, Rect(r.left + 32, r.top, bw - 36, 34), Weight::Medium, 11.5f, t.text.Alpha(k));
         if (h.clicked) picked = i;
     }
-    if (ui.RClick(pill) && input.mouse.y < rowTop) SetSheet(L""); // right click in the sheet itself closes it; the row keeps its own meaning
+    if (ui.RClick(pill)) SetSheet(L""); // right click in the sheet itself closes it
     rt->PopLayer();
 
     if (close) PostMessageW(close, WM_SYSCOMMAND, SC_CLOSE, 0); // as its own close button: the app may still ask to save

@@ -41,9 +41,11 @@ IWICImagingFactory* Wic();
 
 IDWriteTextFormat* TextFmt(Weight weight, float size, Align align); // cached, pointer stays valid until Shutdown
 IDWriteTextFormat* IconFmt(float size, bool filled); // outline or filled symbol font
+IDWriteTextFormat* SysIconFmt(float size); // segoe fluent icons, windows' own
 
 ComPtr<IWICBitmapSource> Decode(const uint8_t* data, size_t size, UINT maxPx); // downscaled to maxPx, pbgra out
 ComPtr<IWICBitmapSource> DecodeFile(const wchar_t* path, UINT maxPx); // tries scaled jpeg decode first
+ComPtr<IWICBitmapSource> FromShellBitmap(HBITMAP hb); // a shell icon's pixels, pbgra, its own copy: the hbitmap stays the caller's
 ComPtr<ID2D1Bitmap> BakeBlur(ID2D1DeviceContext* ctx, ID2D1Bitmap1* source, float sigma); // blurred copy, baked once
 
 }
@@ -110,3 +112,9 @@ inline D2D1_RECT_F Inset(const D2D1_RECT_F& r, float dx, float dy) { return {r.l
 inline bool Inside(const D2D1_RECT_F& r, D2D1_POINT_2F p) { return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom; } // half-open, adjacent rects never both hit
 inline float Width(const D2D1_RECT_F& r) { return r.right - r.left; }
 inline float Height(const D2D1_RECT_F& r) { return r.bottom - r.top; }
+inline bool Same(const D2D1_RECT_F& a, const D2D1_RECT_F& b) { return std::fabs(a.left - b.left) < 0.5f && std::fabs(a.top - b.top) < 0.5f && std::fabs(a.right - b.right) < 0.5f && std::fabs(a.bottom - b.bottom) < 0.5f; } // within half a dip: nothing to repaint
+inline D2D1_RECT_F Union(const D2D1_RECT_F& a, const D2D1_RECT_F& b) { // an empty side counts for nothing
+    if (a.right <= a.left) return b;
+    if (b.right <= b.left) return a;
+    return {(std::min)(a.left, b.left), (std::min)(a.top, b.top), (std::max)(a.right, b.right), (std::max)(a.bottom, b.bottom)};
+}

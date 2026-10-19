@@ -73,7 +73,7 @@ std::wstring ClipText(HWND owner) {
 }
 
 void Bar::StartCalWait(bool openGoogle) {
-    if (!calWaiting) AddClipboardFormatListener(hwnd); // the link the user copies next, from any app, is the one
+    if (!calWaiting && !clipListening) AddClipboardFormatListener(hwnd); // the link the user copies next, from any app, is the one
     calWaiting = true;
     SetTimer(hwnd, kCalWaitTimer, kCalWaitMs, nullptr); // gives up after a while, so the listener doesn't linger
     if (openGoogle) ShellExecuteW(nullptr, L"open", sys::cal::Calendars::GoogleSettings(), nullptr, nullptr, SW_SHOWNORMAL); // the settings page that shows the secret link
@@ -83,7 +83,7 @@ void Bar::StartCalWait(bool openGoogle) {
 
 void Bar::StopCalWait() {
     if (!calWaiting) return;
-    RemoveClipboardFormatListener(hwnd); // stop hearing every copy once there's nothing to wait for
+    if (!clipListening) RemoveClipboardFormatListener(hwnd); // stop hearing every copy once there's nothing to wait for, unless the clipboard widget listens
     KillTimer(hwnd, kCalWaitTimer);
     calWaiting = false;
 }

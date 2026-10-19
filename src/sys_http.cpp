@@ -9,7 +9,7 @@
 
 #pragma comment(lib, "winhttp.lib")
 
-// HTTP GET over one shared WinHTTP session, as Island's, for the lyrics: cancellable from another thread.
+// HTTP GET over one shared WinHTTP session, as Island's, for calendars: cancellable from another thread.
 namespace sys {
 
 namespace detail {

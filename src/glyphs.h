@@ -24,6 +24,9 @@ constexpr int BtConn = 0xE1A8, BtSearch = 0xE1AA, Devices = 0xE1B1; // bluetooth
 constexpr int Keys = 0xE312, Mouse = 0xE323, Phone = 0xE32C, Pc = 0xE30A, Pad = 0xEA28, Watch = 0xE334;
 constexpr int Delete = 0xE872, Add = 0xE145, Close = 0xE5CD, OpenNew = 0xE89E;
 constexpr int Sparkle = 0xE65F, Edit = 0xE3C9, Rocket = 0xEB9B; // tray menu
+constexpr int kSys = 0x10000; // above the bmp: a codepoint in windows' segoe fluent icons instead of our subset
+constexpr int SysPaste = kSys | 0xE77F, SysDownload = kSys | 0xE896, SysEmoji = kSys | 0xE76E, SysPicker = kSys | 0xEF3C, SysNote = kSys | 0xE70B;
+constexpr int SysPhoto = kSys | 0xE91B, SysCup = kSys | 0xEC32, SysFolder = kSys | 0xE8B7, SysStopwatch = kSys | 0xE916, SysChart = kSys | 0xE9D2, SysClip = kSys | 0xF7ED;
 
 // the bar's own: pins, quick settings, calendar
 constexpr int Pin = 0xF10D, Unpin = 0xE6F9, Apps = 0xE5C3, Search = 0xEF7A, Widgets = 0xE1BD, TaskView = 0xE6FA;

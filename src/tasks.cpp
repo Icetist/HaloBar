@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <unordered_set>
 
+#include "overflow.h"
 #include "taskbar.h"
 
 #pragma comment(lib, "version.lib") // GetFileVersionInfo, for an exe's friendly name
@@ -176,15 +177,31 @@ void Tasks::Event(DWORD ev, HWND h) {
         }
         return;
     case EVENT_OBJECT_SHOW:
+        if (overflow::Is(h)) {
+            Ping(kOverflow); // explorer opened its flyout over its own hidden chevron: the bar moves it over its button
+            return;
+        }
         if (taskbar::IsTray(h)) {
             Ping(kTrayShown); // explorer brought its taskbar back: hide it again
             return;
+        }
+        if (GetAncestor(h, GA_ROOT) == h) { // astraeus started after us: the bar steps under it at once
+            wchar_t cls[32] = {};
+            if (GetClassNameW(h, cls, 32) && !wcscmp(cls, L"AstraeusDrawer")) {
+                Ping(kIsland);
+                return;
+            }
         }
         [[fallthrough]];
     case EVENT_OBJECT_UNCLOAKED:
         if (GetAncestor(h, GA_ROOT) == h && !Find(h) && Eligible(h)) Ping(kRescan); // only new top-level windows are worth a scan
         return;
     case EVENT_OBJECT_HIDE:
+        if (overflow::Is(h)) {
+            Ping(kOverflow); // closed: the chevron turns back, focus goes home
+            return;
+        }
+        [[fallthrough]];
     case EVENT_OBJECT_DESTROY:
     case EVENT_OBJECT_CLOAKED:
         if (Find(h)) Ping(kRescan); // ignored unless it was one of ours: hides and destroys are constant

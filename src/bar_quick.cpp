@@ -21,7 +21,8 @@ constexpr float kListHead = 52, kListRow = 40, kListFoot = 44, kMixRow = 50, kMi
 constexpr int kListRows = 6; // networks, devices or outputs shown at once; the rest are in settings
 constexpr float kCalHead = 40, kCalDow = 22, kCalCell = 34, kCalFoot = 44; // month title, weekday initials, one day, today's date
 constexpr float kCalAgenda = 112; // the picked day's events, under the month: a head and three rows
-constexpr float kStatusGlyph = 20; // one status glyph in the row
+
+}
 
 void Keys(std::initializer_list<WORD> keys) { // a windows shortcut, as if typed: the flyouts windows keeps for itself
     INPUT in[8] = {}; // four keys down and up at most
@@ -31,7 +32,9 @@ void Keys(std::initializer_list<WORD> keys) { // a windows shortcut, as if typed
     SendInput(n, in, sizeof(INPUT)); // one call, so nothing typed by the user can land in between
 }
 
+namespace {
 void Open(const wchar_t* uri) { ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL); }
+}
 
 int WifiGlyph(const sys::Status& s) {
     if (!s.online && !s.wifi) return glyph::WifiNone;
@@ -52,6 +55,8 @@ int VolumeGlyph(float level, bool muted) {
     return level < 0.34f ? glyph::VolumeMute : level < 0.67f ? glyph::VolumeDown : glyph::VolumeUp; // thirds, as the windows sound icon
 }
 
+namespace {
+
 int BtGlyph(int kind) {
     switch (kind) {
     case sys::kBtAudio: return glyph::Headphones;
@@ -67,9 +72,6 @@ int BtGlyph(int kind) {
 
 }
 
-// ---- the row ----
-
-float Bar::StatusW() const { return (status.battery ? 3 : 2) * kStatusGlyph + 14; } // desktops have no battery glyph
 
 void Bar::SyncAudio() {
     if (!spk) spk = std::make_unique<sys::AudioDev>(sys::AudioDev::Spk()); // made on first need, not at start
@@ -78,10 +80,10 @@ void Bar::SyncAudio() {
     mic->Refresh();
 }
 
-void Bar::PollStatus() { // the slow timer: anything the row shows that windows doesn't tell us about by itself
-    sys::Status now = sys::ReadStatus();
-    bool changed = !(now == status); // no change, no frame: the poll itself stays free
-    status = std::move(now);
+void Bar::PollStatus() { // the slow timer: anything the bars show that windows doesn't tell us about by itself
+    if (pollWake) SetEvent(pollWake); // network, battery and the bin are read on the poller: their answers come back as WM_APP_POLLED
+    SyncDesktops();
+    bool changed = false;
     if (spk) {
         spk->Refresh();
         float v = spk->Level();
@@ -97,6 +99,41 @@ void Bar::PollStatus() { // the slow timer: anything the row shows that windows 
         notifStamp = s;
     }
     if (changed || lang != was) Redraw();
+}
+
+void Bar::StartPoller() { // one thread that sleeps until asked: the wlan, network list and recycle bin calls block for 30 to 150 ms each
+    pollWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!pollWake) return;
+    poller = std::thread([this, wake = pollWake, h = hwnd] {
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED); // the network list manager is com
+        int round = 0;
+        while (WaitForSingleObject(wake, INFINITE) == WAIT_OBJECT_0 && !pollStop) {
+            auto* r = new Polled{sys::ReadStatus(), -1};
+            if (binAsk.exchange(false) || round++ % 6 == 0) { // the bin each minute, or at once when asked: it walks every drive's bin
+                SHQUERYRBINFO q = {sizeof(q)};
+                r->bin = SUCCEEDED(SHQueryRecycleBinW(nullptr, &q)) && q.i64NumItems > 0 ? 1 : 0;
+            }
+            if (!PostMessageW(h, WM_APP_POLLED, 0, (LPARAM)r)) delete r; // the window went: nobody to tell
+        }
+        sys::CloseStatus();
+        CoUninitialize();
+    });
+}
+
+void Bar::StopPoller() {
+    if (!poller.joinable()) return;
+    pollStop = true;
+    SetEvent(pollWake);
+    poller.join();
+    CloseHandle(pollWake), pollWake = nullptr;
+}
+
+void Bar::OnPolled(LPARAM lp) {
+    std::unique_ptr<Polled> r(reinterpret_cast<Polled*>(lp));
+    bool changed = !(r->status == status);
+    status = std::move(r->status);
+    if (r->bin >= 0 && (r->bin != 0) != binFull) binFull = r->bin != 0, changed = true;
+    if (changed) Redraw();
 }
 
 void Bar::SyncLang() {
@@ -145,6 +182,18 @@ void Bar::SyncLang() {
         DWORD tn = sizeof(text);
         if (RegGetValueW(HKEY_LOCAL_MACHINE, (std::wstring(kLayouts) + L"\\" + found).c_str(), L"Layout Text", RRF_RT_REG_SZ, nullptr, text, &tn) == ERROR_SUCCESS) langName = text;
     }
+    struct Known {
+        const wchar_t* klid;
+        const wchar_t* shortName;
+    };
+    static const Known kKnown[] = {{L"00000409", L"US"}, {L"00020409", L"INTL"}, {L"00010409", L"DVORAK"}, {L"00000809", L"UK"}, {L"00001809", L"IE"},
+                                   {L"00001009", L"CA"}, {L"00000C09", L"AU"}, {L"00000407", L"DE"}, {L"0000040C", L"FR"}, {L"0000080C", L"BE"},
+                                   {L"0000040A", L"ES"}, {L"00000410", L"IT"}, {L"00000416", L"BR"}, {L"00000816", L"PT"}, {L"00000439", L"IN"}}; // windows' own short names under the language
+    for (const Known& k : kKnown)
+        if (!_wcsicmp(found.c_str(), k.klid)) {
+            langSub = k.shortName;
+            return;
+        }
     int same = 0; // several layouts for this same language and region: the region alone can't tell them apart, the layout's name can
     for (int i = 0; i < n; ++i) same += LOWORD((ULONG_PTR)list[i]) == LOWORD((ULONG_PTR)hkl);
     if (same > 1 && !langName.empty()) {
@@ -159,40 +208,6 @@ void Bar::SyncLang() {
         if (words < 2) shortName = langName.substr(0, 6);
         langSub = shortName.substr(0, 5); // fits under the language in the row's narrow slot
     }
-}
-
-void Bar::DrawLang(const Theme& t) {
-    if (lang.empty() || Width(langR) < 1) return; // one layout, or Layout() gave it no room
-    Canvas& c = ui.C();
-    uint32_t id = Ui::Id("lang");
-    Ui::Hit h = ui.Button(id, langR);
-    float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
-    if (hov > 0.01f) c.Fill(langR, Height(langR) / 2, t.text.Alpha(0.09f * hov));
-    float cy = (langR.top + langR.bottom) / 2;
-    c.Text(lang, Rect(langR.left - 4, cy - 13, Width(langR) + 8, 13), Weight::Medium, 10, t.textDim.Mix(t.text, hov), Align::Center); // two lines, as windows' indicator
-    c.Text(langSub, Rect(langR.left - 4, cy, Width(langR) + 8, 13), Weight::Light, 9.5f, t.textLow.Mix(t.text, hov * 0.6f), Align::Center);
-    if (h.clicked) Keys({VK_LWIN, VK_SPACE}); // windows' own switcher, as the taskbar's indicator opens
-}
-
-void Bar::DrawStatus(const Theme& t) {
-    if (Width(statusR) < 1) return;
-    Canvas& c = ui.C();
-    uint32_t id = Ui::Id("status");
-    Ui::Hit h = ui.Button(id, statusR);
-    float hov = ui.Smooth(id + 1, h.hover || qsOpen ? 1.0f : 0, 16); // stays lit while its panel is open
-    if (hov > 0.01f) c.Fill(statusR, Height(statusR) / 2, t.text.Alpha(0.09f * hov));
-    float cy = (statusR.top + statusR.bottom) / 2, x = statusR.left + 7 + kStatusGlyph / 2;
-    Color ink = t.textDim.Mix(t.text, hov);
-    c.Icon(WifiGlyph(status), {x, cy}, 17, ink);
-    c.Icon(VolumeGlyph(volShown, muteShown), {x + kStatusGlyph, cy}, 17, ink);
-    if (status.battery) c.Icon(BatteryGlyph(status), {x + 2 * kStatusGlyph, cy}, 17, status.saver ? t.accentHi : ink); // accent: energy saver is on
-    D2D1_RECT_F wheelSpot = AnyOpen() ? statusR : Outer(); // at rest the whole island turns the volume: no aiming at a tiny icon
-    if (float n = ui.Wheel(wheelSpot); n != 0 && spk) { // as windows: the wheel over the sound icon turns the volume
-        float v = anim::Clamp01(spk->Level() + n * 0.02f); // 2% a notch, as windows
-        spk->SetLevel(v);
-        volShown = v; // shown at once, not at the next poll
-    }
-    if (h.clicked) SetPanel(qsOpen ? Panel::None : Panel::Quick); // a second click closes it
 }
 
 // ---- quick settings ----
@@ -245,9 +260,10 @@ void Bar::DrawQuick(const Theme& t, ID2D1Geometry* shape) {
     if (a <= 0.01f) return;
     rt->PushLayer(D2D1::LayerParameters(pill, shape, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), a), nullptr);
     D2D1_RECT_F area = {W / 2 - kQsW / 2 + kPad, pill.top + CallH() + kPad, W / 2 + kQsW / 2 - kPad, rowTop - 6};
+    qsRight = false;
     if (qsPage == 0) QuickMain(t, area);
     else QuickList(t, area);
-    if (ui.RClick(pill) && input.mouse.y < rowTop) qsPage ? OpenQuickPage(0) : SetPanel(Panel::None); // right click steps back: list, grid, closed
+    if (!qsRight && ui.RClick(pill) && input.mouse.y < rowTop) qsPage ? OpenQuickPage(0) : SetPanel(Panel::None); // right click steps back: list, grid, closed
     rt->PopLayer();
 }
 
@@ -266,8 +282,15 @@ void Bar::QuickMain(const Theme& t, const D2D1_RECT_F& r) {
         lastTile = cell; // for drawing over a tile after it, as the cc badge does
         return w::Tile(ui, t, Ui::Id(id), cell, glyph, label, sub, on, enabled);
     };
+    auto jump = [&](int page, int mod) { // right click: that page, moved under its own module in the bar if it has one there, else right here
+        qsRight = true;
+        if (modAt[mod] >= 0) Anchor(modAt[mod], TopOn());
+        OpenQuickPage(page);
+    };
     if (tile("qs.wifi", status.wifi ? glyph::WifiBars[4] : glyph::Wifi, L"Wi-Fi", wifiSub, wifiOn, radios.HasWifi())) OpenQuickPage(1);
+    if (ui.RClick(lastTile) && radios.HasWifi()) jump(1, kModNet);
     if (tile("qs.bt", btOn ? glyph::Bluetooth : glyph::BluetoothOff, L"Bluetooth", btOn ? L"On" : L"Off", btOn, radios.HasBt())) OpenQuickPage(2);
+    if (ui.RClick(lastTile) && radios.HasBt()) jump(2, kModBt);
     if (tile("qs.air", air ? glyph::Airplane : glyph::AirplaneOff, L"Airplane", air ? L"On" : L"Off", air, radios.HasWifi() || radios.HasBt())) { // every radio off, or back on
         radios.SetWifi(air); // air was on: the radios come back
         radios.SetBt(air);
@@ -314,6 +337,7 @@ void Bar::QuickMain(const Theme& t, const D2D1_RECT_F& r) {
         if (w::Pill(ui, t, Ui::Id("qs.vol"), pr, VolumeGlyph(v, muted), v, &tap, muted)) spk->SetLevel(v), volShown = v;
         if (tap) spk->SetMuted(!muted), muteShown = !muted; // the row's glyph follows at once
         if (w::IconBtn(ui, t, Ui::Id("qs.outs"), {r.right - 15, y + kPillH / 2}, 30, glyph::ChevronRight, 20)) OpenQuickPage(3);
+        if (ui.RClick(pr)) jump(3, kModVol); // the sound page, under the volume module
         y += kPillH + 6;
     }
     if (brightPct >= 0) { // negative: no display whose brightness can be set, e.g. an external monitor

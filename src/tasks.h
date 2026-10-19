@@ -33,7 +33,7 @@ struct Badge { // what an app told the taskbar about one of its windows through 
 // The pinned apps come first, in the windows taskbar's own order, whether they run or not.
 class Tasks {
 public:
-    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle }; // wparam of the posted message; ktitle: only the front window's title moved
+    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle, kOverflow, kIsland }; // kisland: astraeus island's window appeared // wparam of the posted message; ktitle: only the front window's title moved; koverflow: windows' tray flyout opened or closed
     Tasks(HWND notify, UINT msg);
     ~Tasks();
     Tasks(const Tasks&) = delete;

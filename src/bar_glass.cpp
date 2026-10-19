@@ -68,8 +68,8 @@ bool Bar::OpenGlass() {
         BOOL hostBackdrop = TRUE; // windows 11: without this the backdrop brush stays transparent, no blur
         DwmSetWindowAttribute(hwnd, kUseHostBackdrop, &hostBackdrop, sizeof(hostBackdrop));
         g->comp = WUC::Compositor();
-        auto desk = g->comp.as<abi::Desktop::ICompositorDesktopInterop>();
-        winrt::check_hresult(desk->CreateDesktopWindowTarget(hwnd, TRUE, reinterpret_cast<abi::Desktop::IDesktopWindowTarget**>(winrt::put_abi(g->target))));
+        auto interop = g->comp.as<abi::Desktop::ICompositorDesktopInterop>();
+        winrt::check_hresult(interop->CreateDesktopWindowTarget(hwnd, TRUE, reinterpret_cast<abi::Desktop::IDesktopWindowTarget**>(winrt::put_abi(g->target))));
         ComPtr<ID2D1Device> dev;
         ctx->GetDevice(&dev);
         winrt::check_hresult(g->comp.as<abi::ICompositorInterop>()->CreateGraphicsDevice(
@@ -151,16 +151,18 @@ void Bar::EndSurface() {
     }
 }
 
-void Bar::TrimSurface(const RECT& keep) {
+void Bar::TrimSurface(const RECT* keep, UINT n) { // every tile outside these goes; none kept, all go
     if (glass) {
         try {
-            winrt::Windows::Graphics::RectInt32 r{keep.left, keep.top, keep.right - keep.left, keep.bottom - keep.top};
-            if (IsRectEmpty(&keep)) glass->surface.Trim({}); // nothing kept: every tile goes
-            else glass->surface.Trim({&r, 1});
+            winrt::Windows::Graphics::RectInt32 r[4];
+            n = (std::min)(n, 4u);
+            for (UINT i = 0; i < n; ++i) r[i] = {keep[i].left, keep[i].top, keep[i].right - keep[i].left, keep[i].bottom - keep[i].top};
+            if (n == 0) glass->surface.Trim({});
+            else glass->surface.Trim({r, n});
         } catch (...) {
         }
     } else if (surface) {
-        surface->Trim(IsRectEmpty(&keep) ? nullptr : &keep, IsRectEmpty(&keep) ? 0 : 1);
+        surface->Trim(n ? keep : nullptr, n);
     }
 }
 
@@ -208,6 +210,20 @@ float Brightness(const RECT& r) { // average luminance 0..1 of what's on screen 
     return lum;
 }
 
+}
+
+void Bar::SampleShade() { // two thin bands beside the bars, never under them: what shows there is what the glass sits over
+    float top = 0, bot = 0;
+    if (LookNow() == 2 && !AnyOpen() && !full) { // an open panel would be measured instead of the page
+        auto k = [](float l) { return anim::Clamp01((l - 0.42f) / 0.38f); }; // dark and colourful stay clear, bright pages get a deeper tint
+        LONG band = (LONG)std::lround(8 * scale), y = monitor.top + (LONG)std::lround(kBarH * scale), q = winPxW / 4; // thin and only the middle half: a screen read costs by its size
+        if (TopOn()) top = k(Brightness({monitor.left + q, y, monitor.right - q, y + band}));
+        LONG b = monitor.bottom - (LONG)std::lround((kShelfH + 4) * scale);
+        bot = k(Brightness({monitor.left + q, b - band, monitor.right - q, b}));
+    } else if (LookNow() == 2) {
+        return; // keep what was measured while a panel is up
+    }
+    if (std::fabs(top - shadeTop) > 0.04f || std::fabs(bot - shadeBot) > 0.04f) shadeTop = top, shadeBot = bot, Redraw();
 }
 
 void Bar::SampleBehind() { // read once as a panel opens, before the island covers that spot; never per frame

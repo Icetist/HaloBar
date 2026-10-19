@@ -8,6 +8,7 @@
 #include "bar.h"
 #include "gfx.h"
 #include "prefs.h"
+#include "rest.h"
 #include "taskbar.h"
 
 namespace {
@@ -61,6 +62,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     HEAP_OPTIMIZE_RESOURCES_INFORMATION heap = {HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
     HeapSetInformation(nullptr, HeapOptimizeResources, &heap, sizeof(heap)); // heaps hand freed memory back sooner
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); // crisp on mixed dpi screens
+    if (HMODULE ux = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) { // menus follow windows' dark mode: uxtheme's unnamed SetPreferredAppMode
+        using SetMode = int(WINAPI*)(int);
+        if (auto set = reinterpret_cast<SetMode>(GetProcAddress(ux, MAKEINTRESOURCEA(135)))) set(1); // 1: allow dark
+    }
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); // smoother animation under load
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\HaloBar");
     if (!mutex || WaitForSingleObject(mutex, 3000) == WAIT_TIMEOUT) return 0; // wait for the old instance on restart, else bail
@@ -76,6 +81,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     PathRemoveFileSpecW(exe);
     int code = 1;
     if (gfx::Init(std::wstring(exe) + L"\\fonts")) { // shared d2d/dwrite factories + bundled fonts
+        if (prefs::ReadNum(L"WindowsBar", 0)) { // windows has its own taskbar: only the tray icon and its dashboard
+            taskbar::Give(); // a crash in the dock may have left it hidden
+            code = rest::Run(instance);
+            gfx::Shutdown();
+            CoUninitialize();
+            ReleaseMutex(mutex);
+            CloseHandle(mutex);
+            if (code == 2) ShellExecuteW(nullptr, L"open", exePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // the dock back, or a restart
+            return code == 2 ? 0 : code;
+        }
         std::vector<PinItem> pinned;
         {
             Bar bar;
@@ -92,6 +107,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     CoUninitialize();
     ReleaseMutex(mutex);
     CloseHandle(mutex);
-    if (code == 2) ShellExecuteW(nullptr, L"open", exePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // restart from the menu
-    return code == 2 ? 0 : code;
+    if (code == 2 || code == 3) ShellExecuteW(nullptr, L"open", exePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // restart from the menu, or back as a tray icon
+    return code == 2 || code == 3 ? 0 : code;
 }

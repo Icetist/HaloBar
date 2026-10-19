@@ -40,6 +40,14 @@ public:
     bool Captured() const { return active != 0; } // a widget owns the mouse
     bool IsActive(uint32_t id) const { return active == id; }
     void Block(bool on) { blocked = on; } // ignore input, e.g. page under an overlay
+    void Quiet() { animating = ambient = false; } // before a pass: what it alone keeps moving can be told apart
+    void Merge(bool busy, bool amb) { animating = animating || busy, ambient = ambient || amb; } // and the earlier passes' put back after
+    void KeepHits(const D2D1_RECT_F& area) { // a pass skipped this frame: its widgets stay clickable where they were drawn
+        for (const auto& h : hits)
+            if (Inside(area, {h.second.left, h.second.top})) nextHits.push_back(h);
+    }
+    void Rebase() { canvas->Target()->GetTransform(&frameXf); } // a new pass with its own base transform: hit rects stay in the same space
+    void Shift(D2D1_POINT_2F d) { in.mouse.x -= d.x, in.mouse.y -= d.y, in.pressPos.x -= d.x, in.pressPos.y -= d.y; } // a layer drawn moved by d: its hit tests see the mouse where it is on it
     bool RClick(const D2D1_RECT_F& r) const { return !blocked && in.rclick && Inside(r, in.mouse); }
     bool FreePress() const { return in.pressed && active == 0 && !claimed; } // press on empty space, e.g. close panel
 

@@ -56,11 +56,6 @@ void Bar::OnMedia() {
     if (started) meter.Refresh(); // follow whichever output it's playing on now
     if (!hasTrack && mediaOpen) SetMediaOpen(false);
     if (card.Shown()) ShowPreview(); // a card with the transport on it shows play or pause as it is now
-    if (hasTrack && track.music && track.duration > 0 && !track.title.empty()) { // looked up while it plays, so the player has them the moment it opens
-        std::wstring k = sys::LyricSrc::Key(track.title, track.artist);
-        if (k != lyrKey) lyrKey = k, lyrLine = -2;
-        lyrics.Want(track.title, track.artist, track.album, track.duration / 1e7);
-    }
     Redraw();
 }
 
@@ -92,38 +87,8 @@ bool Bar::StepBars(float dt, double now) {
         v += (want - v) * (std::min)(1.0f, dt * 14); // quick attack, smooth fall
         moving = moving || std::fabs(want - v) > 0.01f || want > 0.01f;
     }
-    bool seen = sink < 0.98f && !full && mediaShow > 0.02f; // tucked away or behind a fullscreen app: no one sees them, so no frames at all
+    bool seen = !full && sink < 0.999f && mediaShow > 0.02f && barsRect.right > barsRect.left; // tucked away, behind a fullscreen app, no room for the song, or the small size without bars: no frames at all
     return seen && (moving || playing); // a quiet moment must not stop the frames, or the bars stay flat once the music is back
-}
-
-void Bar::DrawMediaRow(const Theme& t) {
-    barsMoving = false;
-    if (mediaShow < 0.02f) return;
-    Canvas& c = ui.C();
-    const Theme& mt = mediaNow; // the song's own colors
-    float a = anim::Clamp01((mediaShow - 0.4f) / 0.6f);
-    uint32_t id = Ui::Id("media.row");
-    Ui::Hit h = ui.Button(id, mediaR);
-    if (h.clicked) SetMediaOpen(!mediaOpen);
-    float hov = ui.Smooth(id + 1, h.hover && !mediaOpen ? 1.0f : 0, 14);
-    if (hov > 0.01f) c.Fill(Inset(mediaR, -4, -1), Height(mediaR) / 2 + 1, t.text.Alpha(0.09f * hov));
-    if (a <= 0) return;
-    float cy = rowTop + kRowH / 2;
-    c.PushClip(Inset(mediaR, -2, -4));
-    D2D1_RECT_F art = Rect(mediaR.left + 2, cy - kArt / 2, kArt, kArt);
-    if (cover) {
-        c.Art(cover.Get(), coverBlur.Get(), art, kArt * 0.25f, a); // island's art radius: a quarter of its size
-    } else {
-        c.Fill(art, kArt * 0.25f, mt.cardHi.Alpha(a));
-        c.Icon(glyph::Music, {art.left + kArt / 2, art.top + kArt / 2}, 15, mt.accentHi.Alpha(a), true);
-    }
-    float bx = mediaR.right - kBarsW;
-    float tx = art.right + 8, tw = bx - 10 - tx;
-    c.Text(track.title, Rect(tx, cy - 15, tw, 16), Weight::Medium, 12, t.text.Alpha(a));
-    if (!track.artist.empty()) c.Text(track.artist, Rect(tx, cy + 1, tw, 14), Weight::Light, 10.5f, t.textDim.Alpha(a));
-    c.PopClip();
-    barsRect = Rect(bx, cy - 9, kBarsW, 18);
-    DrawBars(ui.Dt(), ui.Now());
 }
 
 void Bar::DrawBars(float dt, double now, bool step) { // the row's mini visualizer, as island's pill; a frame where only these move draws nothing else
@@ -234,10 +199,7 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
     if (cover) c.Art(cover.Get(), coverBlur.Get(), art, 20);
     else c.Icon(glyph::Music, {(art.left + art.right) / 2, (art.top + art.bottom) / 2}, 52, t.textLow);
 
-    float x = art.right + 22, w = 300; // song and controls; the lyrics take the rest
-    D2D1_RECT_F lyr = {x + w + 28, y0 - 4, px + kMediaW - 26, y0 + 150};
-    c.Line({lyr.left - 14, lyr.top + 10}, {lyr.left - 14, lyr.bottom - 10}, t.line, 1);
-    DrawLyrics(lyr, t);
+    float x = art.right + 22, w = px + kMediaW - 26 - x; // the song and its controls
     c.TextSp(Upper(track.app), Rect(x, y0, w, 14), Weight::Medium, 10.5f, t.accent, 1.6f);
     c.Text(track.title.empty() ? L"Nothing playing" : track.title, Rect(x, y0 + 16, w, 32), Weight::Medium, 24, t.text);
     std::wstring sub = track.album.empty() || track.album == track.artist ? track.artist : track.artist + L"  ·  " + track.album;
@@ -267,103 +229,3 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
     rt->PopLayer();
 }
 
-void Bar::DrawLyrics(const D2D1_RECT_F& r, const Theme& t) {
-    Canvas& c = ui.C();
-    std::shared_ptr<const sys::Lyrics> got = lyrKey.empty() ? nullptr : lyrics.Get(lyrKey);
-    if (!got || !got->done) { // still looking: check back now and then, without keeping frames running
-        if (!lyrKey.empty()) SetTimer(hwnd, kLyricTimer, 500, nullptr);
-        float cy = (r.top + r.bottom) / 2;
-        c.Text(lyrKey.empty() ? L"No lyrics for this one" : L"Finding lyrics\u2026", Rect(r.left, cy - 9, Width(r), 18), Weight::Light, 13, t.textLow, Align::Center);
-        return;
-    }
-    if (got->interim) SetTimer(hwnd, kLyricTimer, 1500, nullptr); // a word-timed version may still replace it
-    const auto& lines = got->lines;
-    if (lines.empty()) {
-        float cy = (r.top + r.bottom) / 2;
-        c.Text(L"No synced lyrics for this song", Rect(r.left, cy - 9, Width(r), 18), Weight::Light, 13, t.textLow, Align::Center);
-        return;
-    }
-    constexpr float kRest = 13.5f; // lines around the sung one
-    if (got.get() != lyrDoc) { // new lyrics: measure every line once, shrink the long ones to fit
-        lyrDoc = got.get();
-        lyrFit.assign(lines.size(), kRest);
-        for (size_t i = 0; i < lines.size(); ++i) {
-            float w = TextW(lines[i].text, Weight::Light, kRest);
-            if (w > Width(r)) lyrFit[i] = (std::max)(9.5f, kRest * Width(r) / w);
-        }
-    }
-    double now = track.Elapsed() / 1e7 + got->offsetMs / 1000.0;
-    int cur = -1;
-    for (int i = 0; i < (int)lines.size() && lines[i].start <= now; ++i) cur = i;
-    constexpr float kLineH = 30, kSung = 16;
-    if (cur != lyrLine) { // a new line: laid out once, on one row, scaled down to fit the column if it's long
-        lyrLine = cur;
-        lyrLay.Reset();
-        if (cur >= 0 && !lines[cur].text.empty()) {
-            const std::wstring& tx = lines[cur].text;
-            float size = kSung;
-            for (int attempt = 0; attempt < 2; ++attempt) {
-                lyrLay.Reset();
-                if (FAILED(gfx::DWrite()->CreateTextLayout(tx.c_str(), (UINT32)tx.size(), gfx::TextFmt(Weight::Medium, size, Align::Left), 100000, kLineH, &lyrLay))) break;
-                lyrLay->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                DWRITE_TEXT_METRICS m{};
-                lyrLay->GetMetrics(&m);
-                if (m.width <= Width(r) || attempt == 1) break;
-                size = (std::max)(11.0f, size * Width(r) / m.width); // too wide: the same line, a little smaller
-            }
-        }
-    }
-    float at = ui.Smooth(Ui::Id("lyr.scroll"), (float)(std::max)(cur, 0), 9); // glides to the next line
-    if (track.playing) ui.KeepAlive();
-    float cy = (r.top + r.bottom) / 2;
-    ID2D1RenderTarget* rt = c.Target();
-    c.PushClip(r);
-    for (int i = (std::max)(0, cur - 3); i < (int)lines.size() && i <= cur + 4; ++i) {
-        float y = cy + (i - at) * kLineH;
-        float d = std::fabs(i - at), fade = anim::Clamp01(1 - d / 3.2f);
-        if (fade <= 0.02f || lines[i].text.empty()) continue;
-        D2D1_RECT_F lr = Rect(r.left, y - kLineH / 2, Width(r), kLineH);
-        if (i != cur || !lyrLay) {
-            c.Text(lines[i].text, lr, Weight::Light, i < (int)lyrFit.size() ? lyrFit[i] : kRest, t.textDim.Alpha(0.85f * fade), Align::Left);
-            continue;
-        }
-        auto xAt = [&](int ch) { // where a letter starts on the laid-out line, exactly
-            float x = 0, yy = 0;
-            DWRITE_HIT_TEST_METRICS hm{};
-            if (ch >= (int)lines[i].text.size()) {
-                DWRITE_TEXT_METRICS m{};
-                lyrLay->GetMetrics(&m);
-                return m.width;
-            }
-            lyrLay->HitTestTextPosition((UINT32)(std::max)(0, ch), FALSE, &x, &yy, &hm);
-            return x;
-        };
-        float fill;
-        if (!lines[i].words.empty()) { // word-timed: up to the word being sung, through it as it's sung
-            const auto& ws = lines[i].words;
-            size_t k = 0;
-            while (k + 1 < ws.size() && ws[k + 1].first <= now) ++k;
-            double ws0 = ws[k].first, ws1 = k + 1 < ws.size() ? ws[k + 1].first : lines[i].end;
-            int o1 = k + 1 < ws.size() ? ws[k + 1].second : (int)lines[i].text.size();
-            float in = ws1 > ws0 ? (float)std::clamp((now - ws0) / (ws1 - ws0), 0.0, 1.0) : 1;
-            float x0 = xAt(ws[k].second), x1 = xAt(o1);
-            fill = now < ws0 ? 0 : x0 + (x1 - x0) * in;
-        } else {
-            double span = (std::max)(0.3, lines[i].end - lines[i].start);
-            fill = (float)std::clamp((now - lines[i].start) / span, 0.0, 1.0) * xAt((int)lines[i].text.size());
-        }
-        DWRITE_TEXT_METRICS m{};
-        lyrLay->GetMetrics(&m);
-        D2D1_POINT_2F org = {lr.left, lr.top + (kLineH - m.height) / 2};
-        ComPtr<ID2D1SolidColorBrush> wait, sung;
-        rt->CreateSolidColorBrush(t.text.Alpha(0.45f).D2D(), &wait);
-        rt->CreateSolidColorBrush(t.accentHi.Mix(t.text, 0.35f).D2D(), &sung);
-        if (wait) rt->DrawTextLayout(org, lyrLay.Get(), wait.Get()); // the line, waiting
-        if (sung && fill > 0) {
-            c.PushClip({lr.left, lr.top, lr.left + fill, lr.bottom});
-            rt->DrawTextLayout(org, lyrLay.Get(), sung.Get()); // and sung, filling in word by word
-            c.PopClip();
-        }
-    }
-    c.PopClip();
-}
