@@ -241,12 +241,27 @@ void Bar::Unreserve() {
 
 void Bar::BelowIsland() { // astraeus hangs over the top bar's middle, its hover strip on the very edge; both are topmost, so the bar steps just under it
     HWND isl = FindWindowW(L"AstraeusDrawer", nullptr);
-    if (!isl || !IsWindowVisible(isl)) return;
+    if (!isl || !IsWindowVisible(isl) || !(GetWindowLongW(isl, GWL_EXSTYLE) & WS_EX_TOPMOST)) return; // under a window that isn't topmost, the bar would fall out of the topmost band
     for (HWND w = GetWindow(isl, GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) // already somewhere under it: nothing to do, no z-order churn
         if (w == hwnd) return;
     lowering = true; // our own move: WM_WINDOWPOSCHANGED doesn't answer it
     SetWindowPos(hwnd, isl, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     lowering = false;
+}
+
+void Bar::KeepOnTop() {
+    if (full || !IsWindowVisible(hwnd)) return; // behind a game on purpose
+    for (HWND w = GetWindow(hwnd, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+        if (!IsWindowVisible(w) || (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOPMOST)) continue;
+        BOOL cloaked = FALSE;
+        DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+        if (cloaked) continue; // a suspended store app's frame: there, but never drawn or hit
+        lowering = true; // our own move
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); // a plain window over us: the edge strip under it would never see the mouse
+        lowering = false;
+        BelowIsland();
+        return;
+    }
 }
 
 void Bar::SetFull(bool on) {
@@ -374,6 +389,7 @@ void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG 
 }
 
 void Bar::CheckCovered() {
+    KeepOnTop(); // the app that just came to the front may have been lifted over us
     bool was = covered, wasTop = topCovered;
     covered = topCovered = false;
     if (TopAuto() && tasks) {

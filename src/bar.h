@@ -196,6 +196,7 @@ private:
     float CardRadius() const { return kCardRadius; }
     float TileRadius() const { return kTileRadius; }
     void BelowIsland(); // astraeus hangs over the toolbar's middle: the bar keeps just under it
+    void KeepOnTop(); // windows can lift a maximized app over topmost windows: the dock climbs back
     float Blur() const;
     static constexpr float kZoomMax = 1.12f; // large: the surface is made this tall, so a size change never rebuilds it
     float Zoom() const { return cfg.size == 0 ? 0.9f : cfg.size == 2 ? kZoomMax : 1.0f; }
