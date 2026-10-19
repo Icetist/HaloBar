@@ -3,7 +3,9 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "bar.h"
 #include "gfx.h"
@@ -34,20 +36,31 @@ LONG WINAPI Crashed(EXCEPTION_POINTERS*) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-int Run(Bar& bar) { // returns the quit code
+constexpr size_t kMaxDocks = 12; // four waits each, under windows' 64
+
+int Run(const std::vector<Bar*>& bars) { // returns the quit code
     MSG msg;
     for (;;) {
-        HANDLE waits[4];
-        DWORD n = 0, frameAt = MAXDWORD, prefsAt = MAXDWORD, pinsAt = MAXDWORD, notifAt = MAXDWORD;
-        if (bar.NeedsFrame()) frameAt = n, waits[n++] = bar.FrameWait(); // only while something moves
-        if (bar.PrefsWait()) prefsAt = n, waits[n++] = bar.PrefsWait();
-        if (bar.PinsWait()) pinsAt = n, waits[n++] = bar.PinsWait();
-        if (bar.NotifWait() != INVALID_HANDLE_VALUE) notifAt = n, waits[n++] = bar.NotifWait();
+        HANDLE waits[kMaxDocks * 4];
+        struct Wait {
+            Bar* bar;
+            int kind; // 0 frame, 1 prefs, 2 pins, 3 notifications
+        } what[kMaxDocks * 4];
+        DWORD n = 0;
+        for (Bar* b : bars) {
+            if (b->NeedsFrame()) what[n] = {b, 0}, waits[n++] = b->FrameWait(); // only while something moves
+            if (b->PrefsWait()) what[n] = {b, 1}, waits[n++] = b->PrefsWait();
+            if (b->PinsWait()) what[n] = {b, 2}, waits[n++] = b->PinsWait();
+            if (b->NotifWait() != INVALID_HANDLE_VALUE) what[n] = {b, 3}, waits[n++] = b->NotifWait();
+        }
         DWORD r = MsgWaitForMultipleObjectsEx(n, n ? waits : nullptr, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE); // asleep until there's work, 0 cpu idle
-        if (frameAt != MAXDWORD && r == WAIT_OBJECT_0 + frameAt) bar.Frame(); // guarded: MAXDWORD + 0 is WAIT_FAILED
-        else if (prefsAt != MAXDWORD && r == WAIT_OBJECT_0 + prefsAt) bar.OnPrefs();
-        else if (pinsAt != MAXDWORD && r == WAIT_OBJECT_0 + pinsAt) bar.OnPins();
-        else if (notifAt != MAXDWORD && r == WAIT_OBJECT_0 + notifAt) bar.OnNotifWrite();
+        if (r >= WAIT_OBJECT_0 && r < WAIT_OBJECT_0 + n) {
+            const Wait& w = what[r - WAIT_OBJECT_0];
+            if (w.kind == 0) w.bar->Frame();
+            else if (w.kind == 1) w.bar->OnPrefs();
+            else if (w.kind == 2) w.bar->OnPins();
+            else w.bar->OnNotifWrite();
+        }
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { // drain all queued input
             if (msg.message == WM_QUIT) return (int)msg.wParam;
             TranslateMessage(&msg);
@@ -94,11 +107,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         std::vector<PinItem> pinned;
         {
             Bar bar;
+            std::vector<std::unique_ptr<Bar>> moons; // the other screens' docks, gone before the main one
             if (bar.Create(instance)) {
+                std::vector<Bar*> all = {&bar};
+                if (prefs::Load().screens) { // a dock on every screen, as a taskbar should be
+                    taskbar::Everywhere(true);
+                    for (HMONITOR m : Bar::Screens()) {
+                        if (m == bar.Screen() || all.size() >= kMaxDocks) continue;
+                        auto b = std::make_unique<Bar>();
+                        b->SetMoon(m);
+                        if (b->Create(instance)) all.push_back(b.get()), moons.push_back(std::move(b));
+                    }
+                }
                 gfx::GiveBack(); // trim startup memory
-                code = Run(bar);
+                code = Run(all);
                 pinned = bar.PinList();
             }
+            moons.clear();
         } // the bar lets go of its strip before the taskbar comes back
         taskbar::Give();
         if (code != 2 && pins::Dirty()) pins::ReloadExplorer(pinned); // pins changed here: the windows taskbar starts again with the same ones

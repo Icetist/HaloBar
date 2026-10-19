@@ -91,6 +91,7 @@ Settings Load() {
     s.launcher = num(L"Launcher", s.launcher, 0, 1);
     s.pills = num(L"Pills", s.pills, 0, 1);
     s.song = num(L"Song", s.song, 0, 1);
+    s.screens = num(L"Screens", s.screens, 0, 1);
     s.hoverPlay = num(L"HoverPlay", s.hoverPlay, 0, 1);
     s.date = num(L"Date", s.date, 0, 1);
     s.clock24 = num(L"Clock24", s.clock24, -1, 1); // -1 follows the windows region format
@@ -118,6 +119,13 @@ void Unwatch(HANDLE ev) {
 }
 
 int ReadNum(const wchar_t* name, int fallback) { return Read(kBarKey, name, fallback); }
+
+int ReadShared(const wchar_t* name, int fallback) { return Read(kIslandKey, name, fallback); }
+
+void SaveShared(const wchar_t* name, int value) { // the one place halobar writes astraeus' key: a switch both apps show
+    DWORD v = (DWORD)value;
+    RegSetKeyValueW(HKEY_CURRENT_USER, kIslandKey, name, REG_DWORD, &v, sizeof(v));
+}
 
 void SaveNum(const wchar_t* name, int v) {
     DWORD value = (DWORD)v;

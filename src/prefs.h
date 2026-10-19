@@ -27,6 +27,7 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int top = 2; // the top bar: gone, the dock carries everything and astraeus has the top edge to itself
     int widgets = 0x117; // the dock's widgets, a bit each: weather, stats, focus, water, clipboard, picker, screenshot, emoji, downloads, notes // the top bar. 0 always shown, its strip kept free; 1 auto-hide; 2 off, its status moves into the dock
     int song = 1; // the playing song sits in the bar
+    int screens = 0; // 0 the dock on one screen, the one picked or the main one; 1 a dock on every screen
     int hoverPlay = 1; // resting on the song opens the player
     int date = 1; // the date under the time
     int clock24 = kFollow; // kFollow = the system's clock format, 0 12-hour, 1 24-hour
@@ -42,6 +43,8 @@ void Unwatch(HANDLE ev);
 void MoveOldKey(); // settings kept under the bar's old name come over to HaloBar, once
 Settings Load(); // the bar's own settings, HKCU\Software\HaloBar, each clamped to its range
 int ReadNum(const wchar_t* name, int fallback);
+int ReadShared(const wchar_t* name, int fallback); // what halobar and astraeus share, under astraeus' key: do not disturb
+void SaveShared(const wchar_t* name, int value);
 void SaveNum(const wchar_t* name, int value);
 void Delete(const wchar_t* name);
 

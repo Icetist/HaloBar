@@ -151,24 +151,27 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         head(L"CLIPBOARD");
         if (LabelButton(t, Ui::Id("wg.clip.clear"), Rect(r.right - 86, r.top - 6, 86, 26), glyph::Delete, L"Clear")) clips.clear(), Redraw();
         float y = r.top + kHead;
-        if (clips.empty()) c.Text(L"Copy some text and it shows here", Rect(r.left, y + 6, Width(r), 18), Weight::Regular, 12.5f, t.textDim, Align::Center);
+        if (clips.empty()) c.Text(L"Copy some text or an image and it shows here", Rect(r.left, y + 6, Width(r), 18), Weight::Regular, 12.5f, t.textDim, Align::Center);
         int pick = -1, drop = -1;
         for (size_t i = 0; i < clips.size() && i < (size_t)kListRows; ++i, y += kRow) {
             auto [rr, h] = row(Ui::Id("wg.clip", (int)i), y);
-            c.Text(clips[i].substr(0, clips[i].find_first_of(L"\r\n")), Inset(rr, 10, 0), Weight::Regular, 12.5f, t.text);
+            Clip& cl = clips[i];
+            float tx = rr.left + 10;
+            if (!cl.png.empty()) { // the picture itself, small, before its size
+                if (!cl.thumb && cl.pixels && ctx) ctx->CreateBitmapFromWicBitmap(cl.pixels.Get(), nullptr, &cl.thumb);
+                float th = Height(rr) - 8, tw = cl.h ? (std::min)(th * cl.w / cl.h, 4 * th) : th;
+                D2D1_RECT_F pic = Rect(tx, (rr.top + rr.bottom) / 2 - th / 2, tw, th);
+                if (cl.thumb) c.Image(cl.thumb.Get(), pic, 4, 1);
+                else c.Fill(pic, 4, t.text.Alpha(0.08f));
+                tx = pic.right + 10;
+            }
+            c.Text(ClipLine(cl), Rect(tx, rr.top, rr.right - 10 - tx, Height(rr)), Weight::Regular, 12.5f, cl.png.empty() ? t.text : t.textDim);
             if (h.clicked) pick = (int)i;
             if (input.rclick && Inside(rr, input.mouse)) drop = (int)i;
         }
         c.Text(L"Click to copy again  ·  right click to forget", Rect(r.left, r.bottom - 18, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
-        if (pick >= 0 && OpenClipboard(hwnd)) { // back onto the clipboard, ready to paste
-            const std::wstring s = clips[pick];
-            if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (s.size() + 1) * sizeof(wchar_t))) {
-                memcpy(GlobalLock(g), s.c_str(), (s.size() + 1) * sizeof(wchar_t));
-                GlobalUnlock(g);
-                EmptyClipboard();
-                if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g);
-            }
-            CloseClipboard();
+        if (pick >= 0) {
+            CopyClip(pick);
             SetPanel(Panel::None);
         } else if (drop >= 0) {
             clips.erase(clips.begin() + drop), Redraw(); // right click: forgotten

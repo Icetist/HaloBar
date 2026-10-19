@@ -76,6 +76,10 @@ int VolumeGlyph(float level, bool muted);
 
 class Bar {
 public:
+    void SetMoon(HMONITOR m) { moon = true, moonScreen = m; } // another screen's dock: the taskbar, the tray and updates stay with the main one
+    HMONITOR Screen() const { return mon; }
+    static HMONITOR MainScreen(); // the main dock's screen: the one picked in settings, else windows' main one
+    static std::vector<HMONITOR> Screens(); // every screen, left to right
     Bar();
     ~Bar();
     Bar(const Bar&) = delete;
@@ -236,6 +240,7 @@ private:
     void DrawPeek(const Theme& t, ID2D1Geometry* shape); // a new notification, as a pill rising out of the island
     float PeekH() const { return (std::max)(0.0f, peekSpring.value); }
     bool Quiet() const; // do not disturb: no pills (and, with pills off, no windows banners)
+    bool Hush() const; // windows' banners hidden: our pills or astraeus' show them, or quiet
     void SetQuiet(bool on);
     void Banners(bool hush); // windows' own toast banners off while our pills show them, back as they were after
     void PaintShape(ID2D1Geometry* shape, const Theme& t);
@@ -355,7 +360,16 @@ private:
     sys::Wx wx;
     double focusEnd = 0, focusLeft = 0; // a running session ends at focusEnd; a paused one keeps focusLeft seconds
     int water = 0; // glasses today
-    std::vector<std::wstring> clips; // newest first, in memory only: never written anywhere
+    struct Clip { // text, or an image kept compressed with a small preview; in memory only, never written anywhere
+        std::wstring text;
+        std::vector<BYTE> png;
+        UINT w = 0, h = 0;
+        ComPtr<IWICBitmap> pixels; // the preview, made once
+        ComPtr<ID2D1Bitmap> thumb; // and on the device, made when first drawn
+    };
+    std::vector<Clip> clips; // newest first
+    std::wstring ClipLine(const Clip& cl) const; // what a row says: the text's first line, or the image's size
+    void CopyClip(int i);
     bool clipListening = false;
     int pickHex = -1; // the last picked color
     struct FileRow {
@@ -404,6 +418,7 @@ private:
     void SetMods(const Theme& t, const D2D1_RECT_F& r); // which status modules the dock shows
     void SetWidgets(const Theme& t, const D2D1_RECT_F& r); // the way into the dock's edit mode
     void SetApp(const Theme& t, const D2D1_RECT_F& r); // updates, and handing the taskbar back to windows
+    void SetScreens(const Theme& t, const D2D1_RECT_F& r); // one screen or every screen, and which is the main one
     float setScroll = 0; // how far the settings sheet is scrolled, eased toward
     void SetSong(const Theme& t, const D2D1_RECT_F& r);
     void SetClock(const Theme& t, const D2D1_RECT_F& r);
@@ -430,7 +445,9 @@ private:
     void DrawSwell(const D2D1_RECT_F& r, const Theme& t, double now);
 
     HWND hwnd = nullptr;
-    HMONITOR mon = nullptr;
+    HMONITOR mon = nullptr, moonScreen = nullptr; // where the dock is; a moon's screen, fixed
+    bool moon = false;
+    int screensAt = 0; // screens at start: every screen's docks are made again when that changes
     RECT monitor{};
     float dpi = 1; // the screen's own scale; scale adds the bar's size setting on top
     float scale = 1, W = 0, winH = 0; // dips; the window spans the screen's width, the island floats kGap above its bottom

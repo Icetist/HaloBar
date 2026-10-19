@@ -9,7 +9,15 @@ namespace taskbar {
 namespace {
 constexpr wchar_t kTaken[] = L"TaskbarTaken"; // 1 while we hold the taskbar: a crash leaves it set, the next start knows
 constexpr wchar_t kState[] = L"TaskbarState"; // the user's ABS_* flags from before we took it
-bool taken = false;
+bool taken = false, every = false;
+
+void Secondaries(int show) { // explorer's taskbars on the other screens
+    EnumWindows([](HWND h, LPARAM how) {
+        wchar_t cls[32] = {};
+        if (GetClassNameW(h, cls, 32) && !wcscmp(cls, L"Shell_SecondaryTrayWnd") && (how == SW_HIDE) == (IsWindowVisible(h) != FALSE)) ShowWindow(h, (int)how);
+        return TRUE;
+    }, show);
+}
 
 HWND Tray() { return ExplorerTray(); }
 
@@ -48,9 +56,12 @@ void Take() {
     Hide();
 }
 
+void Everywhere(bool on) { every = on; }
+
 void Hide() {
     if (!taken) return;
-    if (HWND tray = Tray(); tray && IsWindowVisible(tray)) ShowWindow(tray, SW_HIDE); // secondary screens keep theirs, auto-hidden
+    if (HWND tray = Tray(); tray && IsWindowVisible(tray)) ShowWindow(tray, SW_HIDE); // secondary screens keep theirs, auto-hidden, unless a dock is there too
+    if (every) Secondaries(SW_HIDE);
 }
 
 void Give() {
@@ -62,6 +73,7 @@ void Give() {
     SetState(want);
     SetWindowPos(tray, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); // the tray host pushed it to the bottom
     ShowWindow(tray, SW_SHOWNA);
+    Secondaries(SW_SHOWNA); // and theirs on the other screens
     APPBARDATA abd = {sizeof(abd)};
     if (((UINT)SHAppBarMessage(ABM_GETSTATE, &abd) & ABS_AUTOHIDE) == want) prefs::Delete(kTaken); // only once it really took
 }

@@ -522,9 +522,13 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
     const Theme& mt = mediaNow; // the album's own colors
     bool song = hasTrack && !track.title.empty();
     uint32_t id = Ui::Id("weg.media");
-    Ui::Hit h = live ? ui.Button(id, r) : Ui::Hit{};
-    float hov = live ? ui.Smooth(id + 1, h.hover ? 1.0f : 0, 18) : 0; // the visualizer's own frames run only while the mouse is elsewhere
+    float hov = live ? ui.Smooth(id + 1, Inside(r, input.mouse) ? 1.0f : 0, 18) : 0; // the visualizer's own frames run only while the mouse is elsewhere
     float rad = Height(r) / 2, cy = (r.top + r.bottom) / 2;
+    bool play = live && song && mediaSize != 0 && hov > 0.5f; // medium and large: play or pause where the bars were
+    D2D1_POINT_2F po = {r.right - 14 - 11, cy};
+    D2D1_RECT_F pb = Rect(po.x - 13, cy - 13, 26, 26);
+    Ui::Hit bh = play ? ui.Button(Ui::Id("weg.media.play"), pb) : Ui::Hit{}; // before the pill's own: the first button under a press takes it
+    Ui::Hit h = live ? ui.Button(id, r) : Ui::Hit{};
     if (mediaSize == 0) { // small: just the cover, the little bars over its foot; hovered, play or pause
         D2D1_RECT_F art = Inset(r, 4, 4);
         barsRect = {};
@@ -567,14 +571,10 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
         bool two = !track.artist.empty();
         c.Text(track.title, Rect(tx, two ? cy - 14 : cy - 8, tw, 16), Weight::Medium, 12, t.text);
         if (two) c.Text(track.artist, Rect(tx, cy + 1, tw, 14), Weight::Light, 10.5f, t.textDim);
-        if (live && hov > 0.5f) { // play or pause where the bars were
-            D2D1_POINT_2F o = {(barsRect.left + barsRect.right) / 2, cy};
-            D2D1_RECT_F b = Rect(o.x - 13, cy - 13, 26, 26);
-            Ui::Hit bh = ui.Button(Ui::Id("weg.media.play"), b);
-            c.Fill(b, 13, mt.accent.Alpha(bh.hover ? 0.9f : 0.7f));
-            c.Icon(track.playing ? glyph::Pause : glyph::Play, o, 16, mt.onAccent, true);
+        if (play) {
+            c.Fill(pb, 13, mt.accent.Alpha(bh.hover ? 0.9f : 0.7f));
+            c.Icon(track.playing ? glyph::Pause : glyph::Play, po, 16, mt.onAccent, true);
             if (bh.clicked) media.TogglePlay();
-            if (bh.hover) h.clicked = false; // the button's click, not the pill's
         } else {
             DrawBars(0, 0, false); // stepped once per frame, before the passes
         }

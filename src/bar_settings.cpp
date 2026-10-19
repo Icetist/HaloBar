@@ -158,9 +158,9 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     if (w::IconBtn(ui, t, Ui::Id("set.close"), {area.right - 12, area.top + 10}, 28, glyph::Close, 17)) SetSettingsOpen(false);
 
     D2D1_RECT_F view = {gx, area.top + 30, area.right, area.bottom}; // what shows; the cards below it scroll into it
-    constexpr float kModsH = 92, kAppH = 64; // the chip cards, two rows each; halobar's own card, one row of buttons
+    constexpr float kModsH = 92, kAppH = 64, kScrH = 92; // the chip cards, two rows each; halobar's own card, one row of buttons; the screens
     float cw = (Width(view) - 2 * kCardGap) / 3, ch = (Height(view) - 3 * kCardGap - 2 * kModsH) / 2;
-    float most = kCardGap + kAppH; // the content's overflow: halobar's card sits just past the fold
+    float most = 2 * kCardGap + kAppH + kScrH; // the content's overflow: halobar's card and the screens sit past the fold
     uint32_t sid = Ui::Id("set.scroll");
     if (float notch = ui.Wheel(view); notch != 0) setScroll = (std::clamp)(setScroll - notch * 48, 0.0f, most);
     float scroll = ui.Smooth(sid, setScroll, 18);
@@ -178,6 +178,7 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     SetMods(t, Rect(grid.left, y2, Width(grid), kModsH));
     SetWidgets(t, Rect(grid.left, y2 + kModsH + kCardGap, Width(grid), kModsH));
     SetApp(t, Rect(grid.left, y2 + 2 * (kModsH + kCardGap), Width(grid), kAppH));
+    SetScreens(t, Rect(grid.left, y2 + 2 * (kModsH + kCardGap) + kAppH + kCardGap, Width(grid), kScrH));
     rt->PopAxisAlignedClip();
     input.mouse = mouse;
     float k = scroll / most, lane = Height(view) - 16, thumb = lane * Height(view) / (Height(view) + most); // a slim thumb at the right edge: there's more below
@@ -227,7 +228,7 @@ void Bar::SetHero(const Theme& t, const D2D1_RECT_F& r) { // the accent: a hue r
         D2D1_POINT_2F k = {o.x + R * std::cos(Rad(cur.hue - 90)), o.y + R * std::sin(Rad(cur.hue - 90))}; // the knob sits at the current hue
         c.Dot(k, ringW * 0.75f + 3, t.text); // a rim in the text color, so it reads on any hue
         c.Dot(k, ringW * 0.75f, theme::Hsl(cur.hue, 0.80f, 0.60f));
-        static const wchar_t* const kNames[] = {L"Island", L"Wallpaper", L"Custom"};
+        static const wchar_t* const kNames[] = {L"Astraeus", L"Wallpaper", L"Custom"};
         int skip = islandHere ? 0 : 1; // without island there's nothing to follow: wallpaper and custom only
         int src = (std::max)(cfg.accent + 1, skip); // -1 follow island, 0 wallpaper, 1 custom; following a missing island looks like wallpaper
         float segW = 64.0f * (3 - skip);
@@ -269,7 +270,7 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
     D2D1_RECT_F in = Box(c, t, r, L"THEME");
     bool ownGlass = cfg.look == 2; // only the bar's own glass gets a blur slider; island's glass is island's to tune
     Seed s = theme::FromCol(t.accent); // every swatch is tinted with the live accent
-    static const wchar_t* const kNames[] = {L"Island", L"Dark", L"Light", L"Glass", L"Custom"};
+    static const wchar_t* const kNames[] = {L"Astraeus", L"Dark", L"Light", L"Glass", L"Custom"};
     static const int kLooks[] = {-1, 0, 1, 2, 3}; // -1 follows island
     int order[5], n = 0;
     for (int i = 0; i < 5; ++i)
@@ -354,7 +355,7 @@ void Bar::SetRoom(const Theme& t, const D2D1_RECT_F& r) { // the dock: always th
     D2D1_RECT_F in = Box(c, t, r, L"DOCK");
     static const wchar_t* const kDock[] = {L"Show", L"Auto-hide"};
     int d = Segmented(ui, t, "set.dock", Rect(in.left, in.top + 4, Width(in), 26), kDock, 2, cfg.room);
-    c.Text(cfg.room ? L"Windows use the whole screen; the dock slips under them" : L"Maximized windows stop above the dock",
+    c.Text(cfg.room ? L"It slips under windows" : L"Windows stop above it",
            Rect(in.left, in.top + 38, Width(in), 30), Weight::Regular, 11, t.textDim, Align::Center);
     if (d >= 0) SetPref(cfg.room, L"Room", d);
 }
@@ -385,7 +386,8 @@ void Bar::SetMods(const Theme& t, const D2D1_RECT_F& r) { // a chip per status m
 void Bar::SetWidgets(const Theme& t, const D2D1_RECT_F& r) { // widgets are picked on the dock itself, in its edit mode
     Canvas& c = ui.C();
     D2D1_RECT_F in = Box(c, t, r, L"WIDGETS");
-    std::wstring line = std::to_wstring(wgSlots.size()) + (wgSlots.size() == 1 ? L" widget" : L" widgets") + L" in the dock  \u00b7  right click the dock to edit it any time";
+    size_t n = std::count_if(wgSlots.begin(), wgSlots.end(), [&](const WgSlot& w) { return w.kind != kWgApps && w.kind != kWgDivider; }); // the apps and the dividers aren't widgets
+    std::wstring line = std::to_wstring(n) + (n == 1 ? L" widget" : L" widgets") + L" in the dock  \u00b7  right click the dock to edit it any time";
     c.Text(line, Rect(in.left, in.top, Width(in) - 170, Height(in)), Weight::Regular, 11.5f, t.textDim);
     if (LabelButton(t, Ui::Id("set.edit"), Rect(in.right - 160, (in.top + in.bottom) / 2 - 15, 160, 30), glyph::Edit, L"Customize dock")) StartEdit();
 }
@@ -401,6 +403,41 @@ void Bar::SetApp(const Theme& t, const D2D1_RECT_F& r) { // halobar itself: its 
     if (LabelButton(t, Ui::Id("set.windows"), back, glyph::Desktop, L"Go back to Windows taskbar")) { // halobar rests in the tray; its dashboard brings it back
         prefs::SaveNum(L"WindowsBar", 1);
         PostQuitMessage(3);
+    }
+}
+
+void Bar::SetScreens(const Theme& t, const D2D1_RECT_F& r) { // one dock or one on every screen; with more than one screen, which is the main one
+    Canvas& c = ui.C();
+    D2D1_RECT_F in = Box(c, t, r, L"SCREENS");
+    static const wchar_t* const kModes[] = {L"One screen", L"Every screen"};
+    int m = Segmented(ui, t, "set.screens", Rect(in.left, in.top + 2, 240, 26), kModes, 2, cfg.screens);
+    std::vector<HMONITOR> all = Screens();
+    HMONITOR main = MainScreen();
+    c.Text(cfg.screens ? L"A dock on each screen; the tray and alerts stay on the main one" : L"The dock lives on the main screen",
+           Rect(in.left + 256, in.top + 2, Width(in) - 256, 26), Weight::Regular, 11, t.textDim);
+    int pick = -1;
+    if (all.size() > 1) {
+        c.Text(L"Main screen", Rect(in.left, in.top + 40, 90, 24), Weight::Medium, 11.5f, t.text);
+        for (size_t i = 0; i < all.size(); ++i) { // a small screen per display, left to right as they stand
+            D2D1_RECT_F s = Rect(in.left + 96 + i * 52, in.top + 38, 44, 28);
+            uint32_t id = Ui::Id("set.screen", (int)i);
+            Ui::Hit h = ui.Button(id, s);
+            bool on = all[i] == main;
+            float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
+            c.Fill(s, 6, on ? t.accent.Alpha(0.85f) : t.track.Alpha(0.55f + 0.2f * hov));
+            c.Text(std::to_wstring(i + 1), s, Weight::Semi, 12, on ? t.onAccent : t.textDim, Align::Center);
+            if (h.clicked && !on) pick = (int)i;
+        }
+    } else {
+        c.Text(L"One screen connected", Rect(in.left, in.top + 40, Width(in), 24), Weight::Regular, 11, t.textLow);
+    }
+    if (m >= 0 && m != cfg.screens) { // made afresh: each screen's dock starts clean
+        prefs::SaveNum(L"Screens", m);
+        PostQuitMessage(2);
+    } else if (pick >= 0) {
+        MONITORINFOEXW mi = {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(all[(size_t)pick], &mi)) sys::SaveText(L"DockScreen", mi.szDevice), PostQuitMessage(2);
     }
 }
 

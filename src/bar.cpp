@@ -19,12 +19,13 @@
 namespace {
 
 constexpr UINT_PTR kClockTimer = 1, kRescanTimer = 2, kHoverTimer = 3, kCloseTimer = 4, kIdleTimer = 5, kDevTimer = 6, kStatusTimer = 7, kReserveTimer = 8;
-Bar* coverBar = nullptr; // win event hooks carry no context
+std::vector<Bar*> coverBars; // win event hooks carry no context: each dock is found by its own hook handles
 constexpr UINT kReserveSettleMs = 700; // explorer's taskbar takes a moment to really give up its strip once it auto-hides
 constexpr UINT kStatusMs = 10000; // network, battery and volume in the row: windows doesn't tell us, so a slow look
 constexpr UINT kRescanMs = 40; // a burst of window events lands in one walk of the windows
 constexpr UINT kHoverMs = 260, kCloseMs = 420; // song: rest on it to open the player; leave the island this long to close what's open
 constexpr UINT kSetCloseMs = 1400; // settings forgive a longer trip outside
+constexpr WPARAM kTrayShowDesktop = 407; // the command explorer's taskbar runs for its show desktop corner
 constexpr UINT kIdleMs = 2500; // still this long: efficiency mode
 constexpr int kDevTries = 30; // ~3 seconds of retries, 100 ms apart
 constexpr float kThemeSec = 0.8f; // palette crossfade, as island's
@@ -73,9 +74,9 @@ Bar::~Bar() {
     if (clipListening && hwnd) RemoveClipboardFormatListener(hwnd);
     tray.reset(); // apps fall back to explorer's tray, which has every icon
     HookCover(false);
-    coverBar = nullptr;
+    std::erase(coverBars, this);
     if (notifWatch != INVALID_HANDLE_VALUE) FindCloseChangeNotification(notifWatch);
-    if (cfg.pills) Banners(false);
+    if (!moon) Banners(false);
     card.Hide();
     icons.Stop(); // its thread posts to the window: done before the window goes
     tasks.reset(); // unhook before the window goes
@@ -111,18 +112,19 @@ bool Bar::Create(HINSTANCE instance) {
     tasks = std::make_unique<Tasks>(hwnd, WM_APP_TASKS);
     Place();
     tasks->Rescan();
-    coverBar = this;
+    coverBars.push_back(this);
     HookCover(true); // always: auto-hide and the glass's tint both follow the windows
     notifStamp = sys::NotifStamp();
     LoadNotifs(); // the counts start from what's there now
     wchar_t dir[MAX_PATH];
     if (ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Notifications", dir, MAX_PATH))
         notifWatch = FindFirstChangeNotificationW(dir, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE); // the kernel tells us when a toast lands
-    if (cfg.pills) Banners(true);
+    if (Hush()) Banners(true);
+    screensAt = GetSystemMetrics(SM_CMONITORS);
     SetTimer(hwnd, kAppsTimer, 8000, nullptr);
     SetCoalescableTimer(hwnd, kNotifPollTimer, 2000, nullptr, 500); // windows writes its store lazily and the folder watch can lag: two attribute reads every 2 s catch a new toast fast
     cals.Sync(hwnd, WM_APP_CAL, 0); // and again whenever the calendar opens: nothing fetches while it's closed
-    SetTimer(hwnd, kUpdateTimer, kUpdateFirstMs, nullptr);
+    if (!moon) SetTimer(hwnd, kUpdateTimer, kUpdateFirstMs, nullptr); // one updater: the main dock's
     media.Start(hwnd, WM_APP_MEDIA);
     prefsEv = prefs::WatchIsland();
     pinsEv = pins::Watch();
@@ -152,8 +154,31 @@ void Bar::ClaimTray() {
     tray->Claim();
 }
 
+HMONITOR Bar::MainScreen() {
+    std::wstring want = sys::ReadText(L"DockScreen");
+    for (HMONITOR m : Screens()) {
+        MONITORINFOEXW mi = {};
+        mi.cbSize = sizeof(mi);
+        if (!want.empty() && GetMonitorInfoW(m, &mi) && want == mi.szDevice) return m;
+    }
+    return MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY); // none picked, or it's unplugged: windows' main screen
+}
+
+std::vector<HMONITOR> Bar::Screens() {
+    std::vector<std::pair<LONG, HMONITOR>> found;
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR m, HDC, LPRECT r, LPARAM lp) {
+        reinterpret_cast<std::vector<std::pair<LONG, HMONITOR>>*>(lp)->push_back({r->left, m});
+        return TRUE;
+    }, (LPARAM)&found);
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<HMONITOR> out;
+    for (auto& f : found) out.push_back(f.second);
+    return out;
+}
+
 void Bar::Place() {
-    mon = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO probe = {sizeof(probe)};
+    mon = moonScreen && GetMonitorInfoW(moonScreen, &probe) ? moonScreen : MainScreen();
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(mon, &mi);
     monitor = mi.rcMonitor;
@@ -373,8 +398,10 @@ void Bar::HookCover(bool on) {
     OnCoverEvent(nullptr, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), OBJID_WINDOW, CHILDID_SELF, 0, 0);
 }
 
-void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD) {
-    Bar* b = coverBar;
+void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK hook, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD) {
+    Bar* b = nullptr;
+    for (Bar* x : coverBars)
+        if (!hook || std::find(std::begin(x->coverHooks), std::end(x->coverHooks), hook) != std::end(x->coverHooks) || x->moveHook == hook) b = x;
     if (!b || !b->hwnd || obj != OBJID_WINDOW || child != CHILDID_SELF) return; // carets, scrollbars and the like move all the time: not windows
     if (ev == EVENT_SYSTEM_FOREGROUND && h) { // only the app in front can be dragged or maximized over us: follow its moves alone, not the whole desktop's
         DWORD pid = 0;
@@ -424,41 +451,79 @@ void Bar::OnNotifWrite() {
 
 namespace {
 constexpr wchar_t kPushKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications";
+constexpr wchar_t kAppsKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings"; // each app's own notification switches
+constexpr wchar_t kBannersWas[] = L"Software\\HaloBar\\BannersWas"; // each app's banner switch before we hushed it, kept across a crash
+constexpr DWORD kNoValue = 0xFFFFFFFF; // the app had no banner switch of its own
+
+void ToastsOn() { // older builds hushed with windows' master switch, which stops windows keeping notifications at all: never again
+    if (prefs::ReadNum(L"ToastWas", -1) < 0) return;
+    DWORD on = 1;
+    RegSetKeyValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", REG_DWORD, &on, sizeof(on));
+    prefs::Delete(L"ToastWas");
+}
 }
 
 void RestoreBanners() {
-    int was = prefs::ReadNum(L"ToastWas", -1);
-    if (was < 0) return; // we never touched them
-    DWORD v = (DWORD)was;
-    RegSetKeyValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", REG_DWORD, &v, sizeof(v));
-    prefs::Delete(L"ToastWas");
+    ToastsOn();
+    HKEY saved = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kBannersWas, 0, KEY_READ, &saved) != ERROR_SUCCESS) return; // we never touched them
+    wchar_t name[512];
+    for (DWORD i = 0;; ++i) {
+        DWORD len = 512, type = 0, v = 0, size = sizeof(v);
+        if (RegEnumValueW(saved, i, name, &len, nullptr, &type, reinterpret_cast<BYTE*>(&v), &size) != ERROR_SUCCESS) break;
+        std::wstring app = std::wstring(kAppsKey) + L"\\" + name;
+        if (v == kNoValue) RegDeleteKeyValueW(HKEY_CURRENT_USER, app.c_str(), L"ShowBanner");
+        else RegSetKeyValueW(HKEY_CURRENT_USER, app.c_str(), L"ShowBanner", REG_DWORD, &v, sizeof(v));
+    }
+    RegCloseKey(saved);
+    RegDeleteKeyW(HKEY_CURRENT_USER, kBannersWas);
 }
 
-void Bar::Banners(bool hush) {
+void Bar::Banners(bool hush) { // windows still keeps every notification, for its list and ours; only the banner each app pops is turned off
     if (!hush) {
         RestoreBanners();
         return;
     }
-    if (prefs::ReadNum(L"ToastWas", -1) < 0) { // first time: remember the user's own setting, even across a crash
-        DWORD v = 1, size = sizeof(v);
-        RegGetValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", RRF_RT_REG_DWORD, nullptr, &v, &size);
-        prefs::SaveNum(L"ToastWas", (int)v);
+    ToastsOn();
+    HKEY apps = nullptr, saved = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kAppsKey, 0, KEY_READ, &apps) != ERROR_SUCCESS) return;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kBannersWas, 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, &saved, nullptr) != ERROR_SUCCESS) {
+        RegCloseKey(apps);
+        return;
     }
-    DWORD off = 0;
-    RegSetKeyValueW(HKEY_CURRENT_USER, kPushKey, L"ToastEnabled", REG_DWORD, &off, sizeof(off)); // our pill shows it instead
+    wchar_t name[512];
+    for (DWORD i = 0;; ++i) {
+        DWORD len = 512;
+        if (RegEnumKeyExW(apps, i, name, &len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+        DWORD was = kNoValue, size = sizeof(was), off = 0;
+        if (RegGetValueW(saved, nullptr, name, RRF_RT_REG_DWORD, nullptr, &was, &size) != ERROR_SUCCESS) { // not yet ours: remember the app's own choice first
+            was = kNoValue, size = sizeof(was);
+            RegGetValueW(apps, name, L"ShowBanner", RRF_RT_REG_DWORD, nullptr, &was, &size);
+            RegSetValueExW(saved, name, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&was), sizeof(was));
+        }
+        RegSetKeyValueW(apps, name, L"ShowBanner", REG_DWORD, &off, sizeof(off));
+    }
+    RegCloseKey(saved);
+    RegCloseKey(apps);
 }
 
-bool Bar::Quiet() const { return cfg.pills ? prefs::ReadNum(L"Quiet", 0) != 0 : sys::DoNotDisturb(); }
+bool Bar::Hush() const { return !moon && (cfg.pills || Quiet()); } // our pills show them, or quiet with windows' own banners
+
+bool Bar::Quiet() const { return prefs::ReadShared(L"Quiet", prefs::ReadNum(L"Quiet", 0)) != 0; } // shared with astraeus: quiet in one is quiet in both; the old setting until either app first writes it
 
 void Bar::SetQuiet(bool on) {
-    if (cfg.pills) prefs::SaveNum(L"Quiet", on ? 1 : 0); // windows' banners are already off: quiet means no pills
-    else sys::SetDoNotDisturb(on);
+    prefs::SaveShared(L"Quiet", on ? 1 : 0); // astraeus hears it and goes quiet too
+    if (!moon) Banners(cfg.pills || on); // windows' own banners show: quiet them as well
     dnd = on;
     if (on) pillUp = false;
 }
 
-void Bar::ShowDesktop() { // win+d, which explorer still answers: toggles, as the windows corner button does
-    INPUT in[4] = {};
+void Bar::ShowDesktop() { // explorer's own show desktop, as its corner button: toggles
+    if (HWND tray = taskbar::ExplorerTray()) { // our tray host shares its class: win+d and the shell's lookups can land on ours
+        PostMessageW(tray, WM_COMMAND, kTrayShowDesktop, 0);
+        return;
+    }
+    INPUT in[4] = {}; // no explorer taskbar at all: win+d
     for (auto& i : in) i.type = INPUT_KEYBOARD;
     in[0].ki.wVk = in[3].ki.wVk = VK_LWIN;
     in[1].ki.wVk = in[2].ki.wVk = 'D';
@@ -639,7 +704,7 @@ void Bar::SetPref(int& field, const wchar_t* name, int value) {
     SyncLook(); // look and accent take effect with island's crossfade
     bool place = &field == &cfg.size || &field == &cfg.room || &field == &cfg.top;
     PostMessageW(hwnd, WM_APP_RESTYLE, place ? 1 : 0, 0); // never mid-frame: the canvas drawing this very button would be freed under it
-    if (&field == &cfg.pills) Banners(cfg.pills != 0);
+    if (&field == &cfg.pills && !moon) Banners(Hush());
     if (&field == &cfg.song && !cfg.song && mediaOpen) SetMediaOpen(false);
     SampleShade(); // a look change: glass measures what it sits over, others drop the tint
     Redraw();
@@ -687,6 +752,9 @@ void Bar::FreeDev() {
     mixIcons.clear();
     appBmps.clear();
     for (Ghost& gh : ghosts) gh.bmp.Reset(); // bitmaps belong to the old device: remade from their pixels on the new one
+    for (Clip& cl : clips) cl.thumb.Reset();
+    for (FileRow& f : files) f.icon.Reset();
+    photoBmp.Reset();
     cover.Reset();
     coverBlur.Reset();
     surface.Reset();
@@ -812,6 +880,11 @@ void Bar::OnPins() {
 void Bar::OnPrefs() {
     prefs::Rearm(prefsEv);
     islandHere = prefs::IslandInstalled(); // its settings just changed: it may have just been installed
+    if (bool q = Quiet(); q != dnd) { // switched in astraeus
+        dnd = q;
+        if (q) pillUp = false;
+        if (!moon) Banners(cfg.pills || q);
+    }
     bool glassNow = glass != nullptr;
     SyncLook();
     if (ctx && (LookNow() == 2) != glassNow) FreeDev(); // island went into or out of glass, and the bar follows it
@@ -850,7 +923,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         appbar = false;
         Reserve();
         overflow::Forget(); // its chevron and flyout are new windows now
-        if (took) {
+        if (took && !moon) {
             taskbar::Take();
             ClaimTray(); // the new explorer tray came up in front of ours
             SetTimer(hwnd, kReserveTimer, kReserveSettleMs, nullptr); // its strip goes once it auto-hides: drop back to the bottom then
@@ -917,7 +990,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (peek || topPeek) SetTimer(hwnd, kPeekTimer, kPeekMs, nullptr); // called up from the edge: tuck away again a moment after the mouse goes
         KillTimer(hwnd, kHoverTimer);
         hoverArmed = false;
-        if (AnyOpen() && !closeArmed && GetCapture() != hwnd) SetTimer(hwnd, kCloseTimer, setOpen ? kSetCloseMs : kCloseMs, nullptr), closeArmed = true;
+        if (AnyOpen() && !closeArmed && GetCapture() != hwnd) SetTimer(hwnd, kCloseTimer, setOpen || wgOpen ? kSetCloseMs : kCloseMs, nullptr), closeArmed = true; // a widget's panel, like settings, forgives the trip up from the dock
         Redraw();
         return 0;
     case WM_LBUTTONDOWN:
@@ -1031,6 +1104,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             Arm(0);
             break;
         case kStatsTimer: // the load and the network, only while someone can see them
+            if (HasWg(kWgStats) || HasWg(kWgNet)) SetCoalescableTimer(hwnd, kStatsTimer, 2000, nullptr, 500); // one-shot like every timer here: armed again each time
             WidgetTick();
             break;
         case kLangTimer: // the app switched layouts: the label follows
@@ -1076,7 +1150,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt); // leave messages can lie, the cursor can't
-            if (GetCapture() != hwnd && !OnChrome({pt.x / scale, pt.y / scale})) CloseAll();
+            if (GetCapture() != hwnd && !editing && !Typing() && !OnChrome({pt.x / scale, pt.y / scale})) CloseAll(); // editing the dock or typing a note: only done or esc ends it, never a stray mouse
             break;
         }
         case kIdleTimer: Idle(); break;
@@ -1109,7 +1183,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 SetForegroundWindow(overflowFore); // closed with escape or a second click: focus stays on the hidden taskbar otherwise
             if (up != overflowUp) overflowUp = up, Redraw(); // the chevron turns
         } else if (wp == Tasks::kTrayShown) {
-            taskbar::Hide();
+            if (!moon) taskbar::Hide();
             if (tray) tray->Reassert();
         } else {
             if (card.Shown()) ShowPreview(); // titles and windows change under the card
@@ -1186,7 +1260,8 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (pillSeen == 0) pillSeen = top; // the first read: nothing in it is new
             else if (fresh && top > pillSeen) { // something new: a pill, unless the user asked for quiet or is in a fullscreen app
                 pillSeen = top;
-                if (cfg.pills && !Quiet() && !full) {
+                if (Hush()) Banners(true); // an app notifying for the first time has a switch of its own now: its next banner stays hidden too
+                if (cfg.pills && !moon && !Quiet() && !full && !FindWindowW(L"AstraeusHost", nullptr)) { // astraeus running: it shows the notification, not us
                     pillNote = *fresh;
                     pillUp = true;
                     SetTimer(hwnd, kPillTimer, kPillMs, nullptr);
@@ -1274,6 +1349,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DPICHANGED:
     case WM_DISPLAYCHANGE:
+        if (!moon && cfg.screens && GetSystemMetrics(SM_CMONITORS) != screensAt) { // a screen came or went: every screen's docks are made afresh
+            PostQuitMessage(2);
+            return 0;
+        }
         Place();
         return 0;
     case WM_CLOSE: // taskkill without /f, or any polite request to leave: hand the taskbar back on the way out
@@ -1450,11 +1529,9 @@ void Bar::Frame() {
     Log("frame: full presented");
     if (!took) { // really showing: only now does the windows taskbar step aside
         took = true;
-        taskbar::Take();
-        ClaimTray();
         SetTimer(hwnd, kReserveTimer, kReserveSettleMs, nullptr); // once windows' taskbar has fully let go, the strip at the top is ours
-        SetTimer(hwnd, kGhostTimer, 4000, nullptr); // apps had their chance to give us their icons: the rest come from windows' snapshot
-        if (HMODULE u = GetModuleHandleW(L"user32.dll")) { // user32's unnamed-in-the-docs taskman: the window asked where a minimizing window flies
+        if (!moon) taskbar::Take(), ClaimTray(), SetTimer(hwnd, kGhostTimer, 4000, nullptr); // apps had their chance to give us their icons: the rest come from windows' snapshot
+        if (HMODULE u = GetModuleHandleW(L"user32.dll"); u && !moon) { // user32's unnamed-in-the-docs taskman: the window asked where a minimizing window flies
             using GetTm = HWND(WINAPI*)();
             using SetTm = BOOL(WINAPI*)(HWND);
             auto get = reinterpret_cast<GetTm>(GetProcAddress(u, "GetTaskmanWindow"));

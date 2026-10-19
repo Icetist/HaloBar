@@ -75,7 +75,7 @@ float Bar::WidgetW(int kind, int size) const {
     if (kind == kWgApps) return appsW;
     if (kind == kWgDivider) return kWegSep - 2 * kWegGap; // with the gaps either side, as wide as the dock's own separators
     if (size <= 0 || !(wg::Info(kind).sizes & (1 << size))) return kIcon; // small, or a widget that only comes small
-    static const float kMedium[kWgCount] = {176, 40, 82, 76, 76, 76, 136, 92, 40, 40, 136, 136, 156, 136, 92, 112, 136, 136, 136, 40, 136, 104, 84, 124, 116, 80};
+    static const float kMedium[kWgCount] = {176, 40, 82, 76, 96, 76, 136, 92, 40, 40, 136, 136, 156, 136, 92, 112, 136, 136, 136, 40, 136, 104, 84, 124, 116, 80};
     static const float kLarge[kWgCount] = {236, 40, 184, 176, 176, 176, 196, 156, 40, 40, 196, 196, 216, 196, 160, 184, 196, 196, 196, 40, 196, 160, 140, 196, 184, 132};
     return size == 1 ? kMedium[kind] : kLarge[kind];
 }
@@ -216,7 +216,7 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
         break;
     }
     case kWgClip: {
-        std::wstring last = clips.empty() ? L"Nothing copied yet" : clips.front().substr(0, clips.front().find_first_of(L"\r\n"));
+        std::wstring last = clips.empty() ? L"Nothing copied yet" : ClipLine(clips.front());
         if (tiny) c.Icon(glyph::SysPaste, {cx, mid}, 19, t.textDim);
         else lines(glyph::SysPaste, t.textDim, large ? L"Clipboard" : last, large ? last : L"");
         break;
