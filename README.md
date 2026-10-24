@@ -24,7 +24,7 @@
 
 </div>
 
-HaloBar replaces the Windows taskbar with a floating dock at the bottom of your screen: your apps, the widgets you choose and your status icons in one row. Click anything and a panel grows out of it, then settles back down. When a window covers it, it slips away and comes back the moment your mouse touches the bottom edge.
+HaloBar replaces the Windows taskbar with a floating dock at the bottom or along either side of your screen: your apps, the widgets you choose and your status icons in one row. Click anything and a panel grows out of it, then settles back down. When a window covers it, it slips away and comes back the moment your mouse touches that edge.
 
 It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two share their themes, their calendar and Do Not Disturb, and HaloBar leaves the top of the screen to Astraeus. But HaloBar runs entirely on its own: no Electron, no web view, no runtime to install. Just one small native executable written in C++ with Direct2D and DirectComposition.
 
@@ -32,16 +32,20 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 
 ## ✨ Features
 
-- **Your apps.** Pinned and running apps, in the same order and with the same pins as the Windows taskbar. Hover for live window previews, right-click for the app's windows and recent files, middle-click for a new window, and scroll over an app to change its own volume. Windows minimize into their icon. When they don't all fit, a **+N** tile holds the rest.
-- **Widgets, picked from a gallery.** Now playing, recycle bin, weather, system stats, network speed, battery, focus timer, water, clipboard history (text and images), color picker, screenshot, emoji, downloads, a favourite folder, notes, to-do, habits, calendar, world clock, progress of the day and year, quick toggles, volume, search, app switcher and photo. Most come in small, medium and large, and every one shows its real face in the gallery before you add it.
+- **Your apps.** Pinned and running apps, in the same order and with the same pins as the Windows taskbar. Rest on one and its name rises above it; hover for live window previews, right-click for the app's windows and recent files, middle-click for a new window, and scroll over an app to change its own volume. Windows minimize into their icon. When they don't all fit, a **+N** tile holds the rest.
+- **Drop files on an app.** Drag a file onto an app in the dock to open it there. Hold it over the app for a moment and its window comes up, so you can drop straight into it, as on the Windows taskbar.
+- **Keyboard, as on Windows.** **Win + 1–9** opens, shows or tucks away the app in that spot, **Win + T** walks the dock with the arrow keys and Enter, and **Win + B** opens the tray.
+- **Widgets, picked from a gallery.** Now playing, recycle bin, weather, system stats, network speed, battery, drives, focus timer, water, clipboard history (text and images), color picker, screenshot, emoji, downloads, a favourite folder, notes, to-do, habits, calendar, world clock, progress of the day and year, quick toggles, volume, search, app switcher and photo. Most come in small, medium and large, and every one shows its real face in the gallery before you add it. Widgets that show words, like weather, battery and network speed, are as wide as what they say.
+- **Space.** Empty room between widgets, as wide as you drag it. When the dock gets crowded, the spaces give their room back to your apps first.
 - **Edit mode.** Right-click the dock and everything in it can be dragged: widgets, dividers you add yourself, even the whole block of apps. Size each widget, set its options or remove it with its ×.
-- **Status at the end of the row.** Tray, keyboard layout, Bluetooth, network, volume, battery, notifications, quick settings, the clock and show desktop, each one optional. The keyboard layout names itself (ENG UK, ENG INTL) and a click moves to the next one.
+- **Status at the end of the row.** Tray, keyboard layout, Bluetooth, network, volume, battery, notifications, quick settings, the clock and show desktop, each one optional. The keyboard layout names itself (ENG UK, ENG INTL) and a click moves to the next one. Apps' own tray flyouts open right over their icon in the dock.
 - **Quick settings.** Wi-Fi, Bluetooth, airplane mode, mobile hotspot, energy saver, night light, microphone, Do Not Disturb, live captions, cast, project, nearby sharing, accessibility and a snip, plus volume, brightness and every app's own volume. Join Wi-Fi networks and pair Bluetooth devices right in the panel.
 - **Notifications and the calendar.** Your notifications beside a month view, with Do Not Disturb and Clear all. New ones rise as small pills, or from Astraeus when it's running. Connect Google Calendar, Outlook or iCloud with your calendar's private link: links are stored encrypted and shared with Astraeus.
-- **Media.** The playing song with a small visualizer; click it for a player with album art, shuffle and repeat, and pause right from the dock.
-- **Launcher.** Click the Windows logo to search every installed app, with your pins, power options and Windows Start one click away.
-- **Your look.** Astraeus' themes: follow Astraeus, or pick Dark, Light, Glass or Custom with your own accent and background. Compact, normal or large.
-- **Every screen.** One dock on your main screen, or one on every screen, each keeping its own space.
+- **Media.** The playing song with a small visualizer; click it for a player with album art, shuffle and repeat, and pause right from the dock. In a side dock the song becomes a tall pill with its title turned sideways and the visualizer at its end. With Astraeus running, click the album art for Astraeus' fullscreen player with lyrics; close it and you're back in the player.
+- **Launcher.** Click the Windows logo to search every installed app, with your pins, power options and Windows Start one click away. **All apps** lists everything the way Start does, under letters, with folders that open in place.
+- **Menus in HaloBar's style.** Right-click an app, the Windows logo or the recycle bin for a menu with icons, a header and submenus, in your theme.
+- **Your look.** Astraeus' themes: follow Astraeus, or pick Dark, Light, Glass or Custom with your own accent and background. On the solid looks an opacity slider lets the desktop show through the dock and its panels, on glass a blur slider; following Astraeus, both are Astraeus' own. Compact, normal or large.
+- **Every screen, any edge.** A dock on every screen, or on the one you pick from a little map of your monitors. Put it at the bottom (centered, from the left or from the right) or on the left or right edge; it moves there live, without the Windows taskbar flashing up in between.
 - **Windows' taskbar, any time.** One button in settings hands the taskbar back to Windows; HaloBar waits as a tray icon whose little dashboard brings it back.
 - **Updates itself** and **starts with Windows.** New releases install silently once their SHA-256 matches the one published with them.
 
@@ -78,12 +82,14 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 
 HaloBar draws only while something on it moves, and only the part that moved. With nothing changing it sleeps: no redraws, Windows efficiency mode, and its memory handed back. Slow work like reading the network, the recycle bin or app icons happens off the drawing thread, and each widget's data only flows while that widget is in the dock.
 
-Measured over 30 seconds on a 4-thread laptop with music playing:
+A blinking caret books one frame per blink instead of redrawing its panel all the time, the visualizer's frames repaint only the little square the bars live in, without working out curves and outlines that can't reach it, and the glass outline is handed to Windows only when it actually moves.
 
-| | CPU | GPU | Memory (private) |
-|---|---|---|---|
-| Dock tucked under a window | ~190 ms (0.6% of one core) | ~0 ms | ~38 MB |
-| Dock showing, visualizer moving | ~1 s (3% of one core) | ~0.2 s | ~38 MB |
+Measured on a 4-thread laptop with music playing, over 15 minutes of normal use:
+
+| | CPU | Memory (private) |
+|---|---|---|
+| Dock tucked under a window | ~220 ms per 30 s (0.7% of one core) | ~43 MB |
+| Dock sliding out or showing | ~0.2 s per second while it moves | ~43 MB |
 
 ## 📦 Installation
 
@@ -101,9 +107,11 @@ The Windows taskbar steps aside while HaloBar runs and comes back the moment it 
 - **Settings:** the gear in the launcher, or **HaloBar settings** in quick settings.
 - **The player:** click the song. Its play button pauses straight from the dock.
 - **Notifications and the calendar:** click the clock.
-- **The tray:** click the arrow.
+- **The tray:** click the arrow, or press **Win + B**.
 - **Power options and Windows' own tools:** right-click the Windows logo.
 - **Show desktop:** click the far right end of the dock.
+- **Move the dock:** settings → **Position** for the edge, **Screens** for which monitors get one.
+- **Open a file with an app:** drag it onto the app in the dock.
 
 ## 🛠️ Building from source
 
@@ -134,7 +142,7 @@ No. HaloBar works on its own. With Astraeus installed, the two share their look,
 <details>
 <summary><b>Does it work with more than one screen?</b></summary>
 
-Yes. In settings, **Screens** puts the dock on one screen of your choice or on every screen. The tray and notifications stay with the main one.
+Yes. HaloBar puts a dock on every screen, as Windows does. In settings, **Screens** shows your monitors as they stand: pick one for a single dock there, or keep every screen. The tray and notifications stay with the main one.
 
 </details>
 

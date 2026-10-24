@@ -25,7 +25,6 @@ constexpr UINT WM_APP_TRAY = WM_APP + 1, WM_APP_UPD = WM_APP + 2; // the icon's 
 constexpr UINT kTrayId = 1;
 constexpr UINT_PTR kSpinTimer = 1, kUpdateTimer = 2;
 constexpr UINT kUpdateFirstMs = 60 * 1000, kUpdateEveryMs = 6 * 60 * 60 * 1000; // as the dock: a minute in, then a few times a day
-enum Cmd : UINT { kSepCmd = 0, kBack = 100, kUpdate, kRestart, kExit };
 enum class Upd { Idle, Checking, Downloading, Current, Failed, Installed };
 
 constexpr float kW = 252, kPad = 6, kHead = 56, kRow = 38, kSep = 9; // layout in dips, as island's
@@ -36,12 +35,21 @@ struct Item {
     int glyph;
     const wchar_t* label;
 };
-const Item kItems[] = {{kBack, glyph::Sparkle, L"Bring back HaloBar"},
-                       {kUpdate, 0, L"Check for updates"},
-                       {kSepCmd, 0, nullptr},
-                       {kRestart, glyph::Restart, L"Restart"},
-                       {kExit, glyph::Power, L"Exit"}};
-constexpr int kCount = sizeof(kItems) / sizeof(kItems[0]);
+const Item kRestItems[] = {{kBack, glyph::Sparkle, L"Bring back HaloBar"},
+                           {kUpdate, 0, L"Check for updates"},
+                           {kSepCmd, 0, nullptr},
+                           {kRestart, glyph::Restart, L"Restart"},
+                           {kExit, glyph::Power, L"Exit"}};
+const Item kDockItems[] = {{kSettings, glyph::Settings, L"HaloBar settings"}, // the dock is up: its own things first
+                           {kCustomize, glyph::Edit, L"Customize dock"},
+                           {kWindows, glyph::Desktop, L"Go back to Windows taskbar"},
+                           {kUpdate, 0, L"Check for updates"},
+                           {kSepCmd, 0, nullptr},
+                           {kRestart, glyph::Restart, L"Restart"},
+                           {kExit, glyph::Power, L"Exit"}};
+const Item* items = kRestItems; // whichever the open dashboard shows
+int count = sizeof(kRestItems) / sizeof(kRestItems[0]);
+bool resting = true;
 
 struct Menu {
     HWND hwnd = nullptr, owner = nullptr;
@@ -105,25 +113,25 @@ void UpdIcon(Canvas& c, D2D1_POINT_2F o, Color ink) { // an open circle round a 
 
 float Top(int i) {
     float y = kHead;
-    for (int k = 0; k < i; ++k) y += kItems[k].cmd == kSepCmd ? kSep : kRow;
+    for (int k = 0; k < i; ++k) y += items[k].cmd == kSepCmd ? kSep : kRow;
     return y;
 }
 
-float Height() { return Top(kCount) + kPad; }
+float Height() { return Top(count) + kPad; }
 
 int HitAt(float y) {
-    for (int i = 0; i < kCount; ++i) {
-        float top = Top(i), h = kItems[i].cmd == kSepCmd ? kSep : kRow;
-        if (y >= top && y < top + h) return kItems[i].cmd == kSepCmd ? -1 : i;
+    for (int i = 0; i < count; ++i) {
+        float top = Top(i), h = items[i].cmd == kSepCmd ? kSep : kRow;
+        if (y >= top && y < top + h) return items[i].cmd == kSepCmd ? -1 : i;
     }
     return -1;
 }
 
 void Step(int dir) { // keyboard focus, skipping the divider
     int i = g->hover;
-    for (int n = 0; n < kCount; ++n) {
-        i = (i + dir + kCount) % kCount;
-        if (kItems[i].cmd != kSepCmd) break;
+    for (int n = 0; n < count; ++n) {
+        i = (i + dir + count) % count;
+        if (items[i].cmd != kSepCmd) break;
     }
     g->hover = i;
     InvalidateRect(g->hwnd, nullptr, FALSE);
@@ -162,10 +170,10 @@ void Paint() {
         c.Icon(glyph::Sparkle, badge, 18, t.accentHi, true);
     }
     c.Text(L"HaloBar", Rect(kPad + 48, 13, 160, 18), Weight::Medium, 14, t.text);
-    c.Text(L"Resting · Windows has the taskbar", Rect(kPad + 48, 30, 180, 14), Weight::Light, 11, t.textLow);
+    c.Text(resting ? L"Resting · Windows has the taskbar" : L"Your dock, your widgets", Rect(kPad + 48, 30, 180, 14), Weight::Light, 11, t.textLow);
 
-    for (int i = 0; i < kCount; ++i) {
-        const Item& it = kItems[i];
+    for (int i = 0; i < count; ++i) {
+        const Item& it = items[i];
         float y = Top(i);
         if (it.cmd == kSepCmd) {
             c.Line({kPad + 12, y + kSep / 2}, {kW - kPad - 12, y + kSep / 2}, t.hairTop, 1, false);
@@ -182,7 +190,7 @@ void Paint() {
         else c.Icon(it.glyph, {r.left + 22, cy}, 19, icon, hot || back);
         bool upRow = it.cmd == kUpdate;
         if (upRow && upd == Upd::Failed) ink = hot ? kDanger : t.textDim;
-        c.Text(upRow ? UpdLabel() : it.label, {r.left + 44, r.top, r.right - 56, r.bottom}, back ? Weight::Medium : Weight::Regular, 13, ink);
+        c.Text(upRow ? UpdLabel() : it.label, {r.left + 44, r.top, r.right - (upRow ? 56 : 12), r.bottom}, back ? Weight::Medium : Weight::Regular, 13, ink); // only the update row keeps room for its version
         if (upRow) UpdRow(c, t, r, cy);
     }
     c.StrokeV({0, 0, kW, h}, 8, t.hairTop, t.hairBot, 1); // the inner rim; dwm rounds the outside
@@ -202,12 +210,15 @@ void SetUpd(Upd state) {
 
 void Pick(int i) {
     if (i < 0) return;
-    UINT cmd = kItems[i].cmd;
+    UINT cmd = items[i].cmd;
     if (cmd == kUpdate) { // checked in place: the row tells how it went
-        if (!UpdBusy()) SetUpd(Upd::Checking), updater->Check(host, WM_APP_UPD, true);
+        if (UpdBusy()) return;
+        SetUpd(Upd::Checking);
+        if (updater) updater->Check(host, WM_APP_UPD, true);
+        else PostMessageW(g->owner, WM_COMMAND, cmd, 0); // the dock's own updater checks, and tells us how it went
         return;
     }
-    PostMessageW(host, WM_COMMAND, cmd, 0);
+    PostMessageW(g->owner, WM_COMMAND, cmd, 0);
     DestroyWindow(g->hwnd);
 }
 
@@ -266,7 +277,7 @@ LRESULT CALLBACK MenuProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 COLORREF Ref(Color c) { return RGB((int)(c.r * 255), (int)(c.g * 255), (int)(c.b * 255)); }
 
-void Show() { // at the cursor, above it unless there's no room
+void Show(HWND owner, bool rest) { // at the cursor, above it unless there's no room
     if (g) {
         DestroyWindow(g->hwnd);
         return; // a second click on the icon closes it
@@ -286,10 +297,13 @@ void Show() { // at the cursor, above it unless there's no room
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST), &mi);
     if (upd == Upd::Current || upd == Upd::Failed) upd = Upd::Idle; // the last answer is old news
+    resting = rest;
+    items = rest ? kRestItems : kDockItems;
+    count = rest ? (int)(sizeof(kRestItems) / sizeof(kRestItems[0])) : (int)(sizeof(kDockItems) / sizeof(kDockItems[0]));
     g = new Menu();
-    g->owner = host;
+    g->owner = owner;
     g->t = Look();
-    g->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"HaloBarRestMenu", L"HaloBar", WS_POPUP, p.x, p.y, 1, 1, host, nullptr, GetModuleHandleW(nullptr), nullptr);
+    g->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"HaloBarRestMenu", L"HaloBar", WS_POPUP, p.x, p.y, 1, 1, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g->hwnd) {
         delete g;
         g = nullptr;
@@ -336,7 +350,7 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     switch (msg) {
     case WM_APP_TRAY:
-        if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) Show();
+        if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) Show(host, true);
         return 0;
     case WM_APP_UPD:
         switch (wp) {
@@ -400,6 +414,13 @@ int Run(HINSTANCE instance) {
     DestroyWindow(host);
     host = nullptr;
     return code;
+}
+
+void ShowMenu(HWND owner) { Show(owner, false); }
+
+void Note(WPARAM result, const std::wstring& tag) {
+    if (!tag.empty()) updTag = tag;
+    SetUpd(result == sys::Updater::kInstalled ? Upd::Installed : result == sys::Updater::kDownloading ? Upd::Downloading : result == sys::Updater::kCurrent ? Upd::Current : Upd::Failed);
 }
 
 }

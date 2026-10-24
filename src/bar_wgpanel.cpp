@@ -54,6 +54,7 @@ float Bar::WidgetRise() const {
     case kWgClock: return 196;
     case kWgProgress: return 196;
     case kWgApps: return kHead + 14 + (float)(std::max)(1, (moreN + kFileCols - 1) / kFileCols) * kFileRowH + 20;
+    case kWgDrives: return list(drives.size());
     default: return 120;
     }
 }
@@ -78,8 +79,7 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
     auto field = [&](float y, const wchar_t* hint) { // the line being typed, with its caret
         D2D1_RECT_F f = Rect(r.left - 6, y, Width(r) + 12, kRow);
         c.Fill(f, 10, t.text.Alpha(0.06f));
-        bool blink = std::fmod(ui.Now(), 1.0) < 0.55;
-        ui.KeepAlive();
+        bool blink = Caret();
         if (draft.empty()) c.Text(hint, Inset(f, 12, 0), Weight::Regular, 12.5f, t.textLow);
         c.Text(draft + (blink ? L"│" : L""), Inset(f, 12, 0), Weight::Regular, 12.5f, t.text);
     };
@@ -216,6 +216,42 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         closeOnRight = false;
         break;
     }
+    case kWgDrives: { // every drive: how full, open it, eject the removable ones
+        head(L"DRIVES");
+        float y = r.top + kHead;
+        if (drives.empty()) c.Text(L"No drives found", Rect(r.left, y + 6, Width(r), 18), Weight::Regular, 12.5f, t.textDim, Align::Center);
+        int open = -1, eject = -1;
+        for (size_t i = 0; i < drives.size() && i < (size_t)kListRows; ++i, y += kRow) {
+            const DriveRow& d = drives[i];
+            D2D1_RECT_F ej = Rect(r.right - 28, y + 1, 26, kRow - 4);
+            Ui::Hit eh = d.removable ? ui.Button(Ui::Id("wg.eject", (int)i), ej) : Ui::Hit{}; // before the row's own: the first button under a press takes it
+            auto [rr, h] = row(Ui::Id("wg.drive", (int)i), y);
+            float used = d.total ? 1.0f - (float)((double)d.free / (double)d.total) : 0;
+            c.Icon(d.removable ? glyph::SysUsb : glyph::SysDrive, {rr.left + 18, (rr.top + rr.bottom) / 2}, 17, used > 0.9f ? Color::Rgb(0xFF6B6B) : t.accentHi);
+            std::wstring name = std::wstring(1, d.letter) + L":  " + d.label;
+            c.Text(name, Rect(rr.left + 34, rr.top, Width(rr) * 0.5f, Height(rr)), Weight::Medium, 12.5f, t.text);
+            wchar_t sz[48];
+            swprintf_s(sz, L"%.1f GB free of %.0f GB", d.free / 1073741824.0, d.total / 1073741824.0);
+            c.Text(sz, Rect(rr.left, rr.top, Width(rr) - (d.removable ? 40 : 12), Height(rr)), Weight::Regular, 11, t.textDim, Align::Right);
+            if (d.removable) {
+                c.Fill(ej, 8, t.text.Alpha(eh.hover ? 0.12f : 0.05f));
+                c.Icon(glyph::ExpandLess, {(ej.left + ej.right) / 2, (ej.top + ej.bottom) / 2}, 16, eh.hover ? t.accentHi : t.textDim);
+            }
+            if (eh.clicked) eject = (int)i;
+            else if (h.clicked) open = (int)i;
+        }
+        c.Text(L"Click to open  \u00b7  the arrow ejects", Rect(r.left, r.bottom - 18, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
+        if (open >= 0) {
+            wchar_t root[] = {drives[(size_t)open].letter, L':', L'\\', 0};
+            SetPanel(Panel::None);
+            ShellExecuteW(nullptr, L"open", root, nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (eject >= 0) {
+            Eject(drives[(size_t)eject].letter);
+            LoadDrives(); // windows tells us when it's gone, too
+        }
+        closeOnRight = false;
+        break;
+    }
     case kWgApps: { // the apps the dock had no room for
         head(L"MORE APPS");
         if (!tasks) break;
@@ -249,8 +285,7 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         head(L"NOTE");
         D2D1_RECT_F box = Rect(r.left - 4, r.top + 22, Width(r) + 8, Height(r) - 24);
         c.Fill(box, 12, t.text.Alpha(0.05f));
-        std::wstring shown = note + ((std::fmod(ui.Now(), 1.0) < 0.55) ? L"│" : L" "); // a blinking caret at the end
-        ui.KeepAlive();
+        std::wstring shown = note + (Caret() ? L"│" : L" "); // a blinking caret at the end
         ComPtr<IDWriteTextLayout> lay;
         if (SUCCEEDED(gfx::DWrite()->CreateTextLayout(shown.c_str(), (UINT32)shown.size(), gfx::TextFmt(Weight::Regular, 13, Align::Left), Width(box) - 20, Height(box) - 16, &lay))) {
             lay->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
@@ -405,10 +440,15 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         c.Text(m.name, Rect(x + 26, sel.top, 120, Height(sel)), Weight::Semi, 12.5f, t.text);
         x += 150;
         static const wchar_t* const kSizes[] = {L"S", L"M", L"L"};
-        for (int z = 0; z < 3; ++z) {
-            bool can = (m.sizes >> z) & 1;
-            if (chip(Ui::Id("gal.size", z), Rect(x + z * 34, cy - 12, 30, 24), kSizes[z], s.size == z && can, can) && s.size != z) s.size = z, SaveSlots();
-        }
+        if (s.kind == kWgSpace) { // a space: any width, by steps here or by pulling its edge in the dock
+            if (chip(Ui::Id("gal.narrow"), Rect(x, cy - 12, 30, 24), L"−", false, s.size > kSpaceMin)) s.size = (std::max)((int)kSpaceMin, s.size - kSpaceStep), SaveSlots();
+            c.Text(std::to_wstring(s.size), Rect(x + 30, cy - 12, 38, 24), Weight::Medium, 11.5f, t.textDim, Align::Center);
+            if (chip(Ui::Id("gal.wider"), Rect(x + 68, cy - 12, 30, 24), L"+", false, s.size < kSpaceMax)) s.size = (std::min)((int)kSpaceMax, s.size + kSpaceStep), SaveSlots();
+        } else
+            for (int z = 0; z < 3; ++z) {
+                bool can = (m.sizes >> z) & 1;
+                if (chip(Ui::Id("gal.size", z), Rect(x + z * 34, cy - 12, 30, 24), kSizes[z], s.size == z && can, can) && s.size != z) s.size = z, SaveSlots();
+            }
         x += 3 * 34 + 14;
         auto opt = [&](const char* id, const std::vector<std::wstring>& labels, int cur, auto set) { // one option: a row of choices
             float ox = x;
@@ -467,7 +507,7 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         if (cy + kCardH < grid.top || cy > grid.bottom) continue; // out of view: not drawn, not hit
         D2D1_RECT_F card = Rect(grid.left + (i % kGalCols) * (cw + kGalGap), cy, cw, kCardH);
         const wg::Meta& m = wg::Info(k);
-        bool in = HasWg(k) && k != kWgDivider; // dividers are never "in": each click adds another
+        bool in = HasWg(k) && !Many(k); // dividers and spaces are never "in": each click adds another
         Ui::Hit h = ui.Button(Ui::Id("gal.card", k), card);
         c.Fill(card, 16, t.text.Alpha(h.hover ? 0.09f : 0.05f));
         if (in) c.Stroke(card, 16, t.accent.Alpha(0.8f), 1.5f);
@@ -489,8 +529,8 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
     c.PopClip();
     if (toggle >= 0) { // in or out of the dock, at the end of the widgets, at its usual size
         auto it = std::find_if(wgSlots.begin(), wgSlots.end(), [&](const WgSlot& s) { return s.kind == toggle; });
-        if (it != wgSlots.end() && toggle != kWgDivider) wgSlots.erase(it), wgSel = -1;
-        else wgSlots.push_back({toggle, wg::Info(toggle).defSize}), wgSel = (int)wgSlots.size() - 1;
+        if (it != wgSlots.end() && !Many(toggle)) wgSlots.erase(it), wgSel = -1;
+        else wgSlots.push_back({toggle, toggle == kWgSpace ? kSpaceDef : wg::Info(toggle).defSize}), wgSel = (int)wgSlots.size() - 1;
         SaveSlots();
     }
 }

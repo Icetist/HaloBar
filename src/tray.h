@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -38,11 +39,15 @@ public:
     const std::vector<TrayItem>& Items() const { return items; }
     int Visible() const;
     void Click(size_t i, bool right, POINT screen); // as if the icon itself was clicked
+    std::function<bool(uint64_t key, RECT& at)> iconAt; // where an icon shows on screen, for apps that place their flyout by it
+    std::function<bool(RECT& at, UINT& edge)> barAt; // the dock's strip and edge, for apps asking where the taskbar is
 
 private:
     static LRESULT CALLBACK Proc(HWND, UINT, WPARAM, LPARAM);
     LRESULT OnCopy(HWND from, const COPYDATASTRUCT* cds);
     LRESULT Notify(const void* data, DWORD size);
+    LRESULT IconRect(const void* data, DWORD size) const; // 0: not ours to answer
+    LRESULT TaskbarPos(const void* data, DWORD size) const;
     void LogNotify(const void* data, DWORD size, LRESULT result) const;
     bool pending = false; // a change message is already on its way to the bar
     bool debug = false; // DebugTray set: every icon request goes to a log in %TEMP%

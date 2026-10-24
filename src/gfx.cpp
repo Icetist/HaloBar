@@ -505,8 +505,8 @@ void Canvas::Icon(int glyph, D2D1_POINT_2F center, float size, Color c, bool fil
     bool sys = glyph >= glyph::kSys; // flagged: windows' segoe fluent icons, drawn a touch smaller to sit with ours
     IDWriteTextFormat* f = sys ? gfx::SysIconFmt(size * 0.82f) : gfx::IconFmt(size, filled);
     if (!f) return;
-    D2D1_RECT_F r = {center.x - size, center.y - size, center.x + size, center.y + size}; // 2x box, centered format does the rest
-    rt->DrawTextW(&ch, 1, f, r, Brush(c), D2D1_DRAW_TEXT_OPTIONS_NONE);
+    IDWriteTextLayout* l = Layout(std::wstring(1, ch), f, 2 * size, 2 * size, 0); // 2x box, centered format does the rest; cached like text, drawtext would reshape every frame
+    if (l) rt->DrawTextLayout({center.x - size, center.y - size}, l, Brush(c), D2D1_DRAW_TEXT_OPTIONS_NONE);
 }
 
 ID2D1BitmapBrush* Canvas::BitmapBrush(ID2D1Bitmap* bmp) {

@@ -4,6 +4,7 @@
 #include <shellapi.h>
 
 #include "glyphs.h"
+#include "popmenu.h"
 
 namespace {
 
@@ -57,9 +58,15 @@ std::wstring Host(const std::wstring& url) { // which calendar it is, without sh
     return url.substr(b, url.find(L'/', b) - b); // anything else: just its host, the path is the secret
 }
 
+constexpr int kClipTries = 10;
+constexpr DWORD kClipWaitMs = 20;
+
 std::wstring ClipText(HWND owner) {
     std::wstring text;
-    if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(owner)) return text;
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return text;
+    bool open = false;
+    for (int i = 0; i < kClipTries && !(open = OpenClipboard(owner) != FALSE); ++i) Sleep(kClipWaitMs); // the app that just copied, or clipboard history, can hold it a moment
+    if (!open) return text;
     if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
         if (const wchar_t* p = static_cast<const wchar_t*>(GlobalLock(h))) {
             text.assign(p, wcsnlen(p, 4096)); // a link is short; a huge copy is not one
@@ -99,18 +106,16 @@ void Bar::OnClipboard() {
 void Bar::CalMenu() { // what's connected, to add another or let one go
     auto links = cals.Links();
     constexpr UINT kAddGoogle = 1, kAddAny = 2, kRemove = 100; // remove ids are kRemove + index, 0 means dismissed
-    HMENU m = CreatePopupMenu();
-    if (!m) return;
-    if (!links.empty()) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Remove a calendar");
-    for (size_t i = 0; i < links.size() && i < 50; ++i) AppendMenuW(m, MF_STRING, kRemove + (UINT)i, (L"    Remove " + links[i].name + L"  (" + Host(links[i].url) + L")").c_str());
-    if (!links.empty()) AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING, kAddGoogle, L"Connect Google Calendar");
-    AppendMenuW(m, MF_STRING, kAddAny, L"Connect from a copied link (Outlook, iCloud...)");
+    std::vector<popmenu::Item> items;
+    if (!links.empty()) items.push_back(popmenu::Section(L"Remove a calendar"));
+    for (size_t i = 0; i < links.size() && i < 50; ++i) items.push_back({.id = kRemove + (UINT)i, .glyph = glyph::Delete, .label = L"Remove " + links[i].name, .hint = Host(links[i].url), .danger = true});
+    if (!links.empty()) items.push_back(popmenu::Sep());
+    items.push_back({.id = kAddGoogle, .glyph = glyph::Calendar, .label = L"Connect Google Calendar"});
+    items.push_back({.id = kAddAny, .glyph = glyph::Link, .label = L"Connect from a copied link", .hint = L"Outlook, iCloud..."});
     POINT p;
     GetCursorPos(&p);
-    SetForegroundWindow(hwnd); // a menu needs its owner in front, or it never closes
-    UINT pick = (UINT)TrackPopupMenuEx(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_NONOTIFY, p.x, p.y, hwnd, nullptr); // grows up from the bar
-    DestroyMenu(m);
+    popmenu::Head head{.title = L"Calendars", .sub = links.empty() ? L"None connected" : links.size() == 1 ? L"1 connected" : std::to_wstring(links.size()) + L" connected", .glyph = glyph::Calendar};
+    UINT pick = popmenu::Pick(hwnd, items, {.at = p, .h = popmenu::Place::Left, .v = popmenu::Place::Above}, shellNow, scale, &head); // grows up from the bar
     HWND back = tasks ? tasks->Fore() : nullptr; // the bar never keeps the keyboard
     if (back && back != hwnd && IsWindow(back)) SetForegroundWindow(back);
     if (pick == kAddGoogle) StartCalWait(true);

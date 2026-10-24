@@ -2,8 +2,10 @@
 // the dock's pins show as favourites while the field is empty, and all apps lists everything. The list and its icons are read once on a worker, then kept until the bar idles.
 #include "bar.h"
 
+#include <climits>
 #include <cwctype>
 #include <thread>
+#include <unordered_map>
 
 #include "glyphs.h"
 
@@ -12,6 +14,18 @@ namespace {
 constexpr int kCols = 7, kRows = 3; // seven across, three rows in view
 constexpr float kHead = 44, kFoot = 52; // the search bar and the foot
 constexpr float kCellW = 110, kCellH = 112, kGridTile = 56, kGridIcon = 44; // one app: its tile, the icon on it, and two lines of name
+constexpr float kListW = 540, kRowH = 40, kLetterH = 32, kListIcon = 26, kIndent = 22; // all apps as a list: its width, a row, a letter's heading, the icon, a folder's apps set in
+constexpr int kFolderTag = 1 << 24; // in launchHits: a folder, by its place in launchFolders
+
+std::wstring Folded(std::wstring s) {
+    CharLowerBuffW(s.data(), (DWORD)s.size());
+    return s;
+}
+
+wchar_t Letter(const std::wstring& name) { // the heading a name sits under: its first letter, or # for numbers and symbols
+    wchar_t ch = name.empty() ? L'#' : (wchar_t)std::towupper(name[0]);
+    return std::iswalpha(ch) ? ch : L'#';
+}
 
 struct AppsLoad { // what the worker brings back
     std::vector<sys::AppEntry> appList;
@@ -19,6 +33,8 @@ struct AppsLoad { // what the worker brings back
 };
 
 }
+
+constexpr size_t kIconBatch = 24; // icons handed over this many at a time while they load
 
 float Bar::LaunchRise() const { return kHead + kRows * kCellH + 24 + kFoot; } // fixed height: the panel doesn't jump as results come and go
 
@@ -47,9 +63,11 @@ void Bar::LoadApps(bool withIcons) { // two steps on a worker: the names first, 
             icons->icons.resize(names.size());
             for (size_t i = 0; i < names.size(); ++i) {
                 HBITMAP hb = sys::AppIcon(names[i], (int)px);
-                if (!hb) continue; // left null: the tile draws a plain square instead
-                icons->icons[i] = gfx::FromShellBitmap(hb); // its own pixels, independent of the hbitmap freed below
-                DeleteObject(hb);
+                if (hb) icons->icons[i] = gfx::FromShellBitmap(hb), DeleteObject(hb); // its own pixels, independent of the hbitmap freed here; null: the tile shows a letter
+                if ((i + 1) % kIconBatch == 0 && i + 1 < names.size()) { // a batch in: shown at once, the rest still coming
+                    auto* part = new AppsLoad{{}, icons->icons};
+                    if (!PostMessageW(to, WM_APP_APPS, 3, (LPARAM)part)) delete part;
+                }
             }
             if (!PostMessageW(to, WM_APP_APPS, 2, (LPARAM)icons)) delete icons;
         }
@@ -57,9 +75,15 @@ void Bar::LoadApps(bool withIcons) { // two steps on a worker: the names first, 
     }).detach();
 }
 
-void Bar::OnApps(WPARAM step, LPARAM lp) { // step 0: names, all done; 1: names, icons to come; 2: the icons
+void Bar::OnApps(WPARAM step, LPARAM lp) { // step 0: names, all done; 1: names, icons to come; 2: the icons; 3: the icons so far
     auto* got = reinterpret_cast<AppsLoad*>(lp);
     if (!got) return;
+    if (step == 3) {
+        if (got->icons.size() == appList.size()) appIcons = std::move(got->icons); // still loading: appIconsDone stays false
+        delete got;
+        if (launchOpen) Redraw();
+        return;
+    }
     if (step == 2) {
         if (got->icons.size() == appList.size()) appIcons = std::move(got->icons), appIconsDone = true; // a size mismatch means the list was reloaded meanwhile
         appBmps.clear(); // device bitmaps are made again from the new icons on the next draw
@@ -76,15 +100,56 @@ void Bar::OnApps(WPARAM step, LPARAM lp) { // step 0: names, all done; 1: names,
     if (launchOpen) Redraw(); // closed: nothing to show, so no frame
 }
 
+void Bar::BuildLaunchRows() { // start's all apps: a heading per letter, apps and folders in name order, an open folder's apps under it
+    launchRows.clear(), launchListHits.clear(), launchFolders.clear();
+    struct Entry {
+        std::wstring key, label;
+        int app = -1, folder = -1;
+    };
+    std::vector<Entry> top;
+    std::unordered_map<std::wstring, int> seen; // folder, by its folded name
+    for (int i = 0; i < (int)appList.size(); ++i) {
+        const sys::AppEntry& a = appList[i];
+        if (a.folder.empty()) {
+            top.push_back({a.lower, a.name, i, -1});
+            continue;
+        }
+        std::wstring key = Folded(a.folder);
+        if (seen.emplace(key, (int)launchFolders.size()).second) top.push_back({key, a.folder, -1, (int)launchFolders.size()}), launchFolders.push_back(a.folder);
+    }
+    std::stable_sort(top.begin(), top.end(), [](const Entry& x, const Entry& y) { return x.key < y.key; });
+    float y = 0;
+    wchar_t letter = 0;
+    auto row = [&](int kind, int idx, int hit, float h) {
+        LaunchRow r;
+        r.kind = kind, r.idx = idx, r.y = y, r.h = h;
+        if (hit != INT_MIN) r.sel = (int)launchListHits.size(), launchListHits.push_back(hit);
+        launchRows.push_back(r);
+        y += h;
+    };
+    for (const Entry& e : top) {
+        if (wchar_t l = Letter(e.label); l != letter) letter = l, row(0, l, INT_MIN, kLetterH);
+        if (e.app >= 0) {
+            row(1, e.app, e.app, kRowH);
+            continue;
+        }
+        row(2, e.folder, kFolderTag + e.folder, kRowH);
+        if (std::find(launchOpenDirs.begin(), launchOpenDirs.end(), e.label) == launchOpenDirs.end()) continue;
+        for (int i = 0; i < (int)appList.size(); ++i) // its apps, already in name order
+            if (appList[i].folder == e.label) row(3, i, i, kRowH);
+    }
+    launchRowsAt = appsAt, launchRowsVer = launchDirsVer;
+}
+
 void Bar::LaunchKey(WPARAM vk) {
-    int n = (int)launchHits.size();
+    int n = (int)launchHits.size(), cols = LaunchList() ? 1 : kCols; // the list moves a row at a time
     if (vk == VK_ESCAPE && !query.empty()) query.clear(), launchSel = 0; // esc clears the search first, then closes
     else if (vk == VK_ESCAPE) SetPanel(Panel::None);
     else if (vk == VK_RETURN) LaunchPick(launchSel);
     else if (n > 0 && vk == VK_RIGHT) launchSel = (launchSel + 1) % n; // left and right wrap; up and down stop at the edges
     else if (n > 0 && vk == VK_LEFT) launchSel = (launchSel + n - 1) % n;
-    else if (n > 0 && vk == VK_DOWN) launchSel = (std::min)(n - 1, launchSel + kCols);
-    else if (n > 0 && vk == VK_UP) launchSel = (std::max)(0, launchSel - kCols);
+    else if (n > 0 && vk == VK_DOWN) launchSel = (std::min)(n - 1, launchSel + cols);
+    else if (n > 0 && vk == VK_UP) launchSel = (std::max)(0, launchSel - cols);
     Redraw();
 }
 
@@ -103,10 +168,70 @@ void Bar::LaunchChar(wchar_t ch) {
 void Bar::LaunchPick(int i) {
     if (i < 0 || i >= (int)launchHits.size()) return; // enter with no results does nothing
     int h = launchHits[i];
+    if (h >= kFolderTag) { // a folder opens or closes in place; the launcher stays
+        const std::wstring& name = launchFolders[(size_t)(h - kFolderTag)];
+        auto it = std::find(launchOpenDirs.begin(), launchOpenDirs.end(), name);
+        if (it == launchOpenDirs.end()) launchOpenDirs.push_back(name);
+        else launchOpenDirs.erase(it);
+        ++launchDirsVer;
+        Redraw();
+        return;
+    }
     bool admin = GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_SHIFT) < 0; // ctrl+shift+enter, as start: as administrator
     SetPanel(Panel::None); // closed first, so the started app can take the foreground
     if (h >= 0 && h < (int)appList.size()) sys::LaunchApp(appList[h], admin);
     else if (h < 0 && tasks) tasks->Click(-h - 1); // a pin: as clicking it in the row
+}
+
+void Bar::DrawLaunchList(const Theme& t, const D2D1_RECT_F& body, int& pick) { // all apps as start lists it: letters, apps, folders that open in place
+    Canvas& c = ui.C();
+    float totalH = launchRows.empty() ? 0 : launchRows.back().y + launchRows.back().h;
+    float maxScroll = (std::max)(0.0f, totalH + 24 - Height(body));
+    if (float n = ui.Wheel(body); n != 0) launchScroll = (std::clamp)(launchScroll - n * kRowH * 3, 0.0f, maxScroll);
+    for (const LaunchRow& rw : launchRows) // the keys keep the picked row in view
+        if (rw.sel == launchSel) {
+            if (rw.y < launchScroll) launchScroll = rw.y;
+            else if (rw.y + rw.h > launchScroll + Height(body) - 24) launchScroll = (std::min)(maxScroll, rw.y + rw.h - Height(body) + 24);
+        }
+    launchScroll = (std::min)(launchScroll, maxScroll);
+    float scroll = ui.Smooth(Ui::Id("ln.lscroll"), launchScroll, 18);
+    if (launchRows.empty()) c.Text(appsLoading ? L"Finding your apps\u2026" : L"No apps found", Rect(body.left, body.top + 60, Width(body), 18), Weight::Regular, 13, t.textLow, Align::Center);
+    float lx = (body.left + body.right) / 2 - kListW / 2, y0 = body.top + 10;
+    c.PushClip(body);
+    for (const LaunchRow& rw : launchRows) {
+        float y = y0 + rw.y - scroll;
+        if (y + rw.h < body.top || y > body.bottom) continue; // out of view: not drawn, not hit
+        if (rw.kind == 0) { // a letter's heading
+            wchar_t s[2] = {(wchar_t)rw.idx, 0};
+            c.Text(s, Rect(lx + 12, y + 6, 40, rw.h - 6), Weight::Semi, 13, t.accentHi);
+            continue;
+        }
+        float in = rw.kind == 3 ? kIndent : 0;
+        D2D1_RECT_F cell = Rect(lx + in, y + 2, kListW - in, rw.h - 4);
+        Ui::Hit hit = ui.Button(Ui::Id("ln.row", rw.kind == 2 ? kFolderTag + rw.idx : rw.idx), cell);
+        if (hit.hover && (input.mouse.x != lastLaunchMouse.x || input.mouse.y != lastLaunchMouse.y)) launchSel = rw.sel;
+        bool sel = rw.sel == launchSel;
+        if (sel) c.Fill(cell, 10, t.accent.Alpha(0.20f));
+        else if (hit.hover) c.Fill(cell, 10, t.text.Alpha(0.06f));
+        D2D1_RECT_F ic = Rect(cell.left + 10, (cell.top + cell.bottom) / 2 - kListIcon / 2, kListIcon, kListIcon);
+        std::wstring name;
+        if (rw.kind == 2) { // a folder: its own tile, and which way it's turned
+            name = launchFolders[(size_t)rw.idx];
+            bool open = std::find(launchOpenDirs.begin(), launchOpenDirs.end(), name) != launchOpenDirs.end();
+            c.Fill(ic, 7, t.card);
+            c.Icon(glyph::Folder, {(ic.left + ic.right) / 2, (ic.top + ic.bottom) / 2}, 17, t.accentHi, true);
+            c.Icon(open ? glyph::ExpandLess : glyph::ExpandMore, {cell.right - 18, (cell.top + cell.bottom) / 2}, 18, t.textDim);
+        } else {
+            name = appList[(size_t)rw.idx].name;
+            ComPtr<ID2D1Bitmap>& bmp = appBmps[rw.idx];
+            if (!bmp && rw.idx < (int)appIcons.size() && appIcons[(size_t)rw.idx] && ctx) ctx->CreateBitmapFromWicBitmap(appIcons[(size_t)rw.idx].Get(), nullptr, &bmp);
+            if (bmp) c.Pixels(bmp.Get(), ic);
+            else c.Fill(ic, 7, t.card), c.Text(name.substr(0, 1), ic, Weight::Semi, 13, t.textDim, Align::Center); // its icon still loading
+        }
+        c.Text(name, Rect(ic.right + 12, cell.top, Width(cell) - (ic.right + 12 - cell.left) - 36, Height(cell)), Weight::Medium, 13, t.text);
+        if (hit.clicked) pick = rw.sel;
+    }
+    c.PopClip();
 }
 
 void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, a grid of favourites or every app, the user and the session at its foot
@@ -124,8 +249,7 @@ void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, 
     float tw = query.empty() ? 0 : TextW(query, Weight::Regular, 13);
     if (query.empty()) c.Text(L"Applications", f, Weight::Regular, 13, t.textLow);
     else c.Text(query, f, Weight::Regular, 13, t.text);
-    if (std::fmod(ui.Now(), 1.0) < 0.55) c.Fill(Rect(f.left + tw + 1, f.top + 14, 1.5f, kHead - 28), 0.75f, t.accent);
-    ui.KeepAlive(); // the caret blinks while it's open
+    if (Caret()) c.Fill(Rect(f.left + tw + 1, f.top + 14, 1.5f, kHead - 28), 0.75f, t.accent); // the caret blinks while it's open
     bool back = launchAll || !query.empty();
     D2D1_RECT_F ab = Rect(r.right - 16 - 88, r.top + 10, 88, kHead - 20);
     {
@@ -146,7 +270,8 @@ void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, 
     if (!query.empty()) {
         for (int i : sys::Search(appList, query, kCols * kRows)) launchHits.push_back(i);
     } else if (launchAll) {
-        for (int i = 0; i < (int)appList.size(); ++i) launchHits.push_back(i);
+        if (launchRowsAt != appsAt || launchRowsVer != launchDirsVer) BuildLaunchRows(); // remade only when the list or an open folder changes
+        launchHits = launchListHits;
     } else if (tasks) {
         const auto& all = tasks->Apps();
         for (int i = 0; i < (int)all.size() && (int)launchHits.size() < kCols * kRows; ++i)
@@ -154,6 +279,10 @@ void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, 
     }
     if (launchSel >= (int)launchHits.size()) launchSel = (std::max)(0, (int)launchHits.size() - 1);
     D2D1_RECT_F body = {r.left, r.top + kHead + 1, r.right, r.bottom - kFoot - 1};
+    int pick = -1;
+    if (LaunchList()) {
+        DrawLaunchList(t, body, pick);
+    } else {
     float gx = (r.left + r.right) / 2 - kCols * kCellW / 2, gy = body.top + 12;
     int rowsAll = ((int)launchHits.size() + kCols - 1) / kCols;
     float maxScroll = (std::max)(0.0f, rowsAll * kCellH + 24 - Height(body));
@@ -167,8 +296,9 @@ void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, 
     else if (query.empty() && !launchAll && launchHits.empty())
         c.Text(L"Pin apps to the dock and they show here", Rect(body.left, body.top + 60, Width(body), 18), Weight::Regular, 13, t.textLow, Align::Center);
     c.PushClip(body);
-    int pick = -1;
     UINT px = (UINT)(std::max)(48L, std::lround(kGridIcon * scale));
+    ComPtr<ID2D1SolidColorBrush> ink; // one for every name this frame
+    rt->CreateSolidColorBrush(t.text.D2D(), &ink);
     for (int k = 0; k < (int)launchHits.size(); ++k) {
         float y = gy + (k / kCols) * kCellH - scroll;
         if (y + kCellH < body.top || y > body.bottom) continue; // out of view: not drawn, not hit
@@ -194,18 +324,16 @@ void Bar::DrawLauncher(const Theme& t, ID2D1Geometry* shape) { // a search bar, 
             DrawApp(&ta, ic, 1, t, px);
         }
         D2D1_RECT_F label = Rect(cell.left + 4, tile.bottom + 6, Width(cell) - 8, 34);
-        ComPtr<IDWriteTextLayout> lay; // two lines at most, centered
-        if (SUCCEEDED(gfx::DWrite()->CreateTextLayout(name.c_str(), (UINT32)name.size(), gfx::TextFmt(Weight::Medium, 12.5f, Align::Center), Width(label), Height(label), &lay))) {
+        ComPtr<IDWriteTextLayout>& lay = launchLabels[name]; // two lines at most, centered; the caret's blink redraws the grid many times a second
+        if (!lay && SUCCEEDED(gfx::DWrite()->CreateTextLayout(name.c_str(), (UINT32)name.size(), gfx::TextFmt(Weight::Medium, 12.5f, Align::Center), Width(label), Height(label), &lay))) {
             lay->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
             lay->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-            ComPtr<ID2D1SolidColorBrush> ink;
-            Color col = t.text;
-            rt->CreateSolidColorBrush(D2D1::ColorF(col.r, col.g, col.b, col.a), &ink);
-            if (ink) rt->DrawTextLayout({label.left, label.top}, lay.Get(), ink.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
+        if (lay && ink) rt->DrawTextLayout({label.left, label.top}, lay.Get(), ink.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if (hit.clicked) pick = k;
     }
     c.PopClip();
+    }
     lastLaunchMouse = input.mouse;
 
     // the foot: who's signed in, then settings and power

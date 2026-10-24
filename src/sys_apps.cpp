@@ -7,10 +7,13 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace sys {
 namespace {
+
+constexpr int kFolderDepth = 3; // folders inside start folders, this deep
 
 constexpr wchar_t kAppsPrefix[] = L"shell:AppsFolder\\"; // start's own folder: win32 shortcuts and store apps alike
 constexpr DWORD kFetch = 64;  // items per IEnumShellItems::Next, fewer cross-apartment round trips
@@ -112,6 +115,51 @@ std::wstring Trim(const std::wstring& s) {
     return s.substr(b, e - b + 1);
 }
 
+std::wstring Fold(std::wstring s) {
+    CharLowerBuffW(s.data(), (DWORD)s.size());
+    return s;
+}
+
+void Shortcuts(const std::wstring& dir, const std::wstring& folder, std::unordered_map<std::wstring, std::wstring>& into, int depth) { // every shortcut under a start folder, by its name
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileExW((dir + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        std::wstring n = fd.cFileName;
+        if (n == L"." || n == L".." || (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (depth < kFolderDepth) Shortcuts(dir + L"\\" + n, folder, into, depth + 1); // a folder inside a folder: start shows its apps in the outer one
+            continue;
+        }
+        size_t dot = n.rfind(L'.');
+        if (dot == std::wstring::npos) continue;
+        std::wstring ext = Fold(n.substr(dot));
+        if (ext == L".lnk" || ext == L".url") into.emplace(Fold(n.substr(0, dot)), folder); // the shortcut's name is the name all apps lists
+    } while (FindNextFileW(f, &fd));
+    FindClose(f);
+}
+
+std::unordered_map<std::wstring, std::wstring> StartFolders() { // the folders start's all apps shows: the subfolders of both start menus, by app name
+    std::unordered_map<std::wstring, std::wstring> out;
+    for (REFKNOWNFOLDERID id : {FOLDERID_Programs, FOLDERID_CommonPrograms}) { // the user's own first: its name wins on a clash
+        PWSTR root = nullptr;
+        if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &root))) continue;
+        std::wstring base = root;
+        CoTaskMemFree(root);
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileExW((base + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+        if (f == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::wstring n = fd.cFileName;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || n == L"." || n == L".." || (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
+            if (Fold(n) == L"startup") continue; // what runs at sign-in, not a group start shows
+            Shortcuts(base + L"\\" + n, n, out, 0);
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    return out;
+}
+
 void Collect(IEnumShellItems* items, std::vector<AppEntry>& out, std::unordered_set<std::wstring>& seen) {
     IShellItem* batch[kFetch] = {};
     for (;;) {
@@ -169,6 +217,9 @@ std::vector<AppEntry> ListApps() {
         std::sort(out.begin(), out.end(), [](const AppEntry& a, const AppEntry& b) {
             return a.lower != b.lower ? a.lower < b.lower : a.name < b.name;  // stable order for equal folds
         });
+        const auto folders = StartFolders();
+        for (AppEntry& e : out)
+            if (auto it = folders.find(e.lower); it != folders.end()) e.folder = it->second; // packaged apps never match: start keeps them at the top level too
     } catch (...) {  // bad_alloc mid-enum: hand back what we have rather than unwind into a worker thread
         OutputDebugStringW(L"[apps] enumeration aborted\n");
     }

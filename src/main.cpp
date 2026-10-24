@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 
+#include <ctime>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,9 +31,19 @@ void StartWithWindows(const std::wstring& exe) { // a taskbar has to be there at
     RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, L"HaloBar", REG_SZ, want.c_str(), (DWORD)((want.size() + 1) * sizeof(wchar_t)));
 }
 
+wchar_t crashExe[MAX_PATH] = {}; // filled at start: the crash handler mustn't allocate
+constexpr int kRelaunchGapSec = 60; // a crash that keeps coming back stops relaunching
+constexpr wchar_t kAfterCrash[] = L"--after-crash"; // the relaunched dock: windows' error reporting can hold the dead one, and its mutex, for many seconds
+constexpr DWORD kMutexWaitMs = 3000, kCrashWaitMs = 30000;
+
 LONG WINAPI Crashed(EXCEPTION_POINTERS*) {
     taskbar::Give(); // never leave the user without a taskbar
     RestoreBanners(); // nor without their notification banners
+    int now = (int)time(nullptr);
+    if (crashExe[0] && now - prefs::ReadNum(L"CrashAt", 0) > kRelaunchGapSec) { // and the dock comes back on its own
+        prefs::SaveNum(L"CrashAt", now);
+        ShellExecuteW(nullptr, L"open", crashExe, kAfterCrash, nullptr, SW_SHOWNORMAL); // waits on our mutex, which goes with this process
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -71,7 +82,7 @@ int Run(const std::vector<Bar*>& bars) { // returns the quit code
 
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR args, int) {
     HEAP_OPTIMIZE_RESOURCES_INFORMATION heap = {HEAP_OPTIMIZE_RESOURCES_CURRENT_VERSION, 0};
     HeapSetInformation(nullptr, HeapOptimizeResources, &heap, sizeof(heap)); // heaps hand freed memory back sooner
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); // crisp on mixed dpi screens
@@ -81,7 +92,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); // smoother animation under load
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\HaloBar");
-    if (!mutex || WaitForSingleObject(mutex, 3000) == WAIT_TIMEOUT) return 0; // wait for the old instance on restart, else bail
+    DWORD wait = args && wcsstr(args, kAfterCrash) ? kCrashWaitMs : kMutexWaitMs;
+    if (!mutex || WaitForSingleObject(mutex, wait) == WAIT_TIMEOUT) return 0; // wait for the old instance on restart, else bail
     sys::FinishUpdate(); // the exe an update replaced goes now that it isn't running
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1; // sta for wic and shell apis
     SetUnhandledExceptionFilter(Crashed);
@@ -90,6 +102,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring exePath = exe;
+    wcscpy_s(crashExe, exe);
     StartWithWindows(exePath);
     PathRemoveFileSpecW(exe);
     int code = 1;
@@ -125,13 +138,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             }
             moons.clear();
         } // the bar lets go of its strip before the taskbar comes back
-        taskbar::Give();
+        if (code != 2) taskbar::Give(); // a restart keeps it: the next dock takes over a hidden taskbar, so windows' never flashes up in between
         if (code != 2 && pins::Dirty()) pins::ReloadExplorer(pinned); // pins changed here: the windows taskbar starts again with the same ones
         gfx::Shutdown();
     }
     CoUninitialize();
     ReleaseMutex(mutex);
     CloseHandle(mutex);
-    if (code == 2 || code == 3) ShellExecuteW(nullptr, L"open", exePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // restart from the menu, or back as a tray icon
+    if (code == 2 || code == 3) { // restart from the menu, or back as a tray icon
+        bool started = (INT_PTR)ShellExecuteW(nullptr, L"open", exePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
+        if (!started && code == 2) taskbar::Give(); // no dock coming: never leave the user without a taskbar
+    }
     return code == 2 || code == 3 ? 0 : code;
 }

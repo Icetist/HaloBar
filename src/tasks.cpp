@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 #include <propsys.h>
 #include <propkey.h>
@@ -329,6 +330,16 @@ void Tasks::Rescan() {
 }
 
 void Tasks::Activate(HWND h) {
+    WINDOWPLACEMENT wp = {sizeof(wp)};
+    if (GetWindowPlacement(h, &wp) && !MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONULL)) { // lost off every screen (one was unplugged): back onto the main one
+        MONITORINFO mi = {sizeof(mi)};
+        GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi);
+        LONG w = (std::min)(wp.rcNormalPosition.right - wp.rcNormalPosition.left, mi.rcWork.right - mi.rcWork.left);
+        LONG ht = (std::min)(wp.rcNormalPosition.bottom - wp.rcNormalPosition.top, mi.rcWork.bottom - mi.rcWork.top);
+        wp.rcNormalPosition = {mi.rcWork.left + 40, mi.rcWork.top + 40, mi.rcWork.left + 40 + w, mi.rcWork.top + 40 + ht};
+        if (wp.showCmd == SW_SHOWMINIMIZED) wp.showCmd = SW_RESTORE;
+        SetWindowPlacement(h, &wp);
+    }
     if (IsIconic(h)) ShowWindowAsync(h, SW_RESTORE); // async: a hung app can't stall the bar
     if (!SetForegroundWindow(h)) SwitchToThisWindow(h, TRUE); // the click was ours, so windows normally lets us; this covers the rest
 }
@@ -464,6 +475,53 @@ void Tasks::Click(int i) {
     // not in front: bring back the window used last
     auto recent = std::max_element(wins.begin(), wins.end(), [](const TaskWin& a, const TaskWin& b) { return a.used < b.used; });
     Activate(recent->hwnd);
+}
+
+namespace {
+
+std::wstring LinkTarget(const std::vector<BYTE>& pidl) { // a pin's program: the shortcut it is, followed
+    wchar_t path[MAX_PATH] = {};
+    if (pidl.empty() || !SHGetPathFromIDListW((PCIDLIST_ABSOLUTE)pidl.data(), path)) return L"";
+    size_t n = wcslen(path);
+    if (n < 4 || _wcsicmp(path + n - 4, L".lnk")) return path;
+    Microsoft::WRL::ComPtr<IShellLinkW> link;
+    Microsoft::WRL::ComPtr<IPersistFile> file;
+    wchar_t target[MAX_PATH] = {};
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) || FAILED(link.As(&file)) || FAILED(file->Load(path, STGM_READ)) ||
+        FAILED(link->GetPath(target, MAX_PATH, nullptr, 0)))
+        return L"";
+    return target;
+}
+
+}
+
+bool Tasks::CanOpen(int i) const {
+    if (i < 0 || i >= (int)apps.size()) return false;
+    const TaskApp& a = apps[i];
+    return !a.exe.empty() || !a.aumid.empty() || !a.pidl.empty();
+}
+
+bool Tasks::OpenWith(int i, const std::vector<std::wstring>& files) {
+    if (files.empty() || !CanOpen(i)) return false;
+    const TaskApp& a = apps[i];
+    if (!a.aumid.empty()) { // a store app takes files through its activation, not a command line; a desktop one says no and falls through
+        std::vector<PIDLIST_ABSOLUTE> ids;
+        for (const auto& f : files)
+            if (PIDLIST_ABSOLUTE id = nullptr; SUCCEEDED(SHParseDisplayName(f.c_str(), nullptr, &id, 0, nullptr))) ids.push_back(id);
+        Microsoft::WRL::ComPtr<IShellItemArray> items;
+        Microsoft::WRL::ComPtr<IApplicationActivationManager> am;
+        DWORD pid = 0;
+        bool ok = !ids.empty() && SUCCEEDED(SHCreateShellItemArrayFromIDLists((UINT)ids.size(), (PCIDLIST_ABSOLUTE_ARRAY)ids.data(), &items)) &&
+                  SUCCEEDED(CoCreateInstance(CLSID_ApplicationActivationManager, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&am))) &&
+                  SUCCEEDED(am->ActivateForFile(a.aumid.c_str(), items.Get(), L"open", &pid));
+        for (auto id : ids) CoTaskMemFree(id);
+        if (ok) return true;
+    }
+    std::wstring exe = !a.exe.empty() ? a.exe : LinkTarget(a.pidl);
+    if (exe.empty()) return false;
+    std::wstring args;
+    for (const auto& f : files) args += L"\"" + f + L"\" "; // each path quoted: spaces stay inside one argument
+    return (INT_PTR)ShellExecuteW(nullptr, L"open", exe.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL) > 32;
 }
 
 void Tasks::Launch(int i, bool admin) {

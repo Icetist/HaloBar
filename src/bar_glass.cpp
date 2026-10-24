@@ -14,6 +14,8 @@
 #include <winrt/Windows.UI.Composition.Desktop.h>
 #include <winrt/Windows.UI.Composition.h>
 
+#include <array>
+
 #include "bar.h"
 
 namespace WUC = winrt::Windows::UI::Composition;
@@ -59,6 +61,8 @@ struct Bar::Glass {
     WUC::CompositionVirtualDrawingSurface surface{nullptr}; // our frames, kept like the plain path's virtual surface
     winrt::com_ptr<abi::ICompositionDrawingSurfaceInterop> draw;
     float blurShown = -1;
+    std::array<float, 13> maskFor{}; // the outline composition holds now: the chrome's rects and the scale
+    bool maskSet = false;
 };
 
 bool Bar::OpenGlass() {
@@ -124,6 +128,17 @@ void Bar::FreeGlass() {
     glass = nullptr;
 }
 
+void Bar::SyncMask() { // the outline goes to composition only when it moved: a new clip path each frame has dwm redo the blur behind it
+    if (!glass) return;
+    D2D1_RECT_F c = CardOnScreen();
+    const std::array<float, 13> want = {capL.left, capL.top, capL.right, capL.bottom, wegDrawn.left, wegDrawn.top, wegDrawn.right, wegDrawn.bottom,
+                                        c.left, c.top, c.right, c.bottom, scale}; // the radii are constants
+    if (glass->maskSet && want == glass->maskFor) return;
+    glass->maskFor = want;
+    glass->maskSet = true;
+    GlassMask(Chrome().Get());
+}
+
 void Bar::GlassMask(ID2D1Geometry* shape) {
     if (!glass) return;
     ComPtr<ID2D1TransformedGeometry> placed; // in pixels, like the visual
@@ -135,6 +150,7 @@ void Bar::GlassMask(ID2D1Geometry* shape) {
         glass->frost.IsVisible(ok);
     } catch (...) {
         glass->frost.IsVisible(false); // no clip, no blur: never frost the whole window
+        glass->maskSet = false; // tried again on the next frame, as before
     }
 }
 

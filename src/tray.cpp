@@ -31,6 +31,34 @@ struct NotifyData32 { // NOTIFYICONDATAW as Shell_NotifyIcon sends it: handles a
     DWORD hBalloonIcon;
 };
 
+struct IconId { // Shell_NotifyIconGetRect's question: which icon, and whether it wants the corner or the size
+    DWORD sig; // kTraySig
+    DWORD msg; // 1 the top left corner, 2 the width and height
+    DWORD cbSize;
+    DWORD pad;
+    DWORD hWnd;
+    UINT uID;
+    GUID guidItem;
+};
+
+struct AppBarData64 { // APPBARDATA as SHAppBarMessage passes it: 64 bit fields from 32 and 64 bit apps alike
+    DWORD cbSize, pad0;
+    UINT64 hWnd;
+    UINT uCallbackMessage, pad1;
+    UINT uEdge, pad2;
+    RECT rc;
+    INT64 lParam;
+};
+
+struct AppBarMsg {
+    AppBarData64 abd;
+    DWORD msg, pad1;
+    UINT64 hShared; // the asker's answer goes into this shared block
+    DWORD pid, pad3;
+};
+
+constexpr ULONG_PTR kAppBarData = 0, kIconRectData = 3;
+
 struct TrayData {
     DWORD sig; // kTraySig, or it's not a notify icon call
     DWORD msg; // NIM_*
@@ -279,11 +307,50 @@ LRESULT TrayHost::Forward(WPARAM wp, LPARAM lp) const {
 LRESULT TrayHost::OnCopy(HWND from, const COPYDATASTRUCT* cds) {
     WPARAM wp = (WPARAM)from; // the real sender: explorer's appbar code checks who is asking
     LPARAM lp = (LPARAM)cds;
+    if (cds->dwData == kIconRectData) // the icon shows in the dock, not in explorer's hidden tray
+        if (LRESULT r = IconRect(cds->lpData, cds->cbData)) return r;
+    if (cds->dwData == kAppBarData) // the dock is the taskbar now; every other appbar call is explorer's
+        if (LRESULT r = TaskbarPos(cds->lpData, cds->cbData)) return r;
     if (cds->dwData != kNotifyData) return Forward(wp, lp); // appbars and icon positions: explorer answers those
     LRESULT mine = Notify(cds->lpData, cds->cbData);
     Forward(wp, lp); // explorer keeps its copy of every icon
     if (debug && cds->cbData >= sizeof(DWORD) * 2 + 4 * sizeof(DWORD)) LogNotify(cds->lpData, cds->cbData, mine);
     return mine;
+}
+
+LRESULT TrayHost::IconRect(const void* data, DWORD size) const {
+    if (!iconAt || !data || size < sizeof(IconId)) return 0;
+    IconId q{};
+    memcpy(&q, data, sizeof(q));
+    if (q.sig != kTraySig || (q.msg != 1 && q.msg != 2)) return 0;
+    static const GUID kNone{};
+    bool byGuid = !IsEqualGUID(q.guidItem, kNone);
+    auto it = std::find_if(items.begin(), items.end(), [&](const TrayItem& i) {
+        return byGuid ? i.hasGuid && IsEqualGUID(i.guid, q.guidItem) : !i.hasGuid && i.owner == (HWND)(ULONG_PTR)q.hWnd && i.id == q.uID;
+    });
+    RECT r{};
+    if (it == items.end() || !iconAt(it->key, r)) return 0;
+    return q.msg == 1 ? MAKELONG((WORD)(SHORT)r.left, (WORD)(SHORT)r.top) : MAKELONG((WORD)(r.right - r.left), (WORD)(r.bottom - r.top)); // asked twice: the corner, then the size
+}
+
+LRESULT TrayHost::TaskbarPos(const void* data, DWORD size) const {
+    if (!barAt || !data || size < sizeof(AppBarMsg)) return 0;
+    AppBarMsg q{};
+    memcpy(&q, data, sizeof(q));
+    if (q.msg != ABM_GETTASKBARPOS || !q.hShared) return 0;
+    using Lock = void*(WINAPI*)(HANDLE, DWORD);
+    using Unlock = BOOL(WINAPI*)(void*);
+    static HMODULE shell = GetModuleHandleW(L"shell32.dll");
+    static auto lock = shell ? (Lock)GetProcAddress(shell, "SHLockShared") : nullptr;
+    static auto unlock = shell ? (Unlock)GetProcAddress(shell, "SHUnlockShared") : nullptr;
+    RECT r{};
+    UINT edge = ABE_BOTTOM;
+    if (!lock || !unlock || !barAt(r, edge)) return 0;
+    auto* out = static_cast<AppBarData64*>(lock((HANDLE)(ULONG_PTR)q.hShared, q.pid));
+    if (!out) return 0;
+    out->rc = r, out->uEdge = edge; // where it would be: windows' own reply has just these two
+    unlock(out);
+    return TRUE;
 }
 
 bool TrayHost::IsSystemIcon(const GUID& g, HWND owner) { // explorer's volume, network and power share one guid family

@@ -71,10 +71,57 @@ const wchar_t* WgWxText(int code) { return WxText(code); }
 double WgFrac(int kind) { return Frac(kind); }
 std::wstring WgRate(double bps) { return Rate(bps); }
 
+static std::wstring Widest(std::wstring s) { // every digit as an 8: the widest the same shape of number gets, and few strings to measure
+    for (wchar_t& ch : s)
+        if (ch >= L'0' && ch <= L'9') ch = L'8';
+    return s;
+}
+
+constexpr float kFitStep = 4, kFitSlack = 6; // widths move in small steps; a few dips spare isn't worth a reflow
+constexpr float kFitMaxW = 260; // the widest a fitted widget gets
+constexpr double kFitShrinkSec = 6; // a shorter number this long before the widget gives the room back
+
+void Bar::SyncFit() {
+    double now = (double)GetTickCount64() / 1000;
+    bool moved = false;
+    auto fit = [&](int kind, float want) {
+        want = std::ceil(want / kFitStep) * kFitStep;
+        float& w = fitW[kind];
+        if (w <= 0 || want > w) moved = moved || w != want, w = want, fitLow[kind] = 0; // longer: room at once, nothing clipped
+        else if (want >= w - kFitSlack) fitLow[kind] = 0;
+        else if (fitLow[kind] <= 0) fitLow[kind] = now;
+        else if (now - fitLow[kind] > kFitShrinkSec) w = want, fitLow[kind] = 0, moved = true; // a quieter spell: give the room back
+    };
+    if (HasWg(kWgNet)) fit(kWgNet, kPad * 2 + 16 + (std::max)(TextW(Widest(Rate(netDown)), Weight::Semi, 11.5f), TextW(Widest(Rate(netUp)), Weight::Regular, 11)) + 2);
+    for (const WgSlot& s : wgSlots)
+        if (s.kind == kWgWeather && s.size > 0) {
+            std::wstring deg = wx.valid ? WgDeg(wx.tempC, fahrenheit) : L"--";
+            if (s.size == 1) {
+                fit(kWgWeather, kPad * 2 + 26 + TextW(Widest(deg), Weight::Semi, 15) + 2);
+                continue;
+            }
+            std::wstring top = deg + L"  " + (wx.valid ? WxText(wx.code) : L"");
+            std::wstring sub = wx.valid ? L"H " + WgDeg(wx.highC, fahrenheit) + L"  L " + WgDeg(wx.lowC, fahrenheit) + (wx.place.empty() ? L"" : L"  ·  " + wx.place) : L"Finding the forecast";
+            float tw = (std::max)(TextW(Widest(top), Weight::Semi, 12.5f), TextW(Widest(sub), Weight::Regular, 10.5f));
+            fit(kWgWeather, (std::min)(kFitMaxW, kPad * 2 + 26 + tw + 2)); // a long place name is cut, not the dock stretched
+        } else if (s.kind == kWgBattery && s.size > 0) {
+            std::wstring pct = status.battery && status.percent >= 0 ? std::to_wstring(status.percent) + L"%" : L"AC";
+            float tw = TextW(Widest(pct), Weight::Semi, 12.5f);
+            if (s.size == 2) tw = (std::max)(tw, TextW(status.charging ? L"Charging" : status.battery ? L"On battery" : L"Plugged in", Weight::Regular, 10.5f));
+            fit(kWgBattery, kPad * 2 + 26 + tw + 2);
+        }
+    if (moved) Redraw();
+}
+
 float Bar::WidgetW(int kind, int size) const {
     if (kind == kWgApps) return appsW;
+    if (kind == kWgMedia && !cfg.song && !editing) return 0; // "song in the bar" off: its spot goes, though edit mode still shows it to move or remove
+    if (kind == kWgSpace) return (std::min)(spaceCap, (float)(size >= kSpaceMin ? size : kSpaceDef)); // its own width, along the dock either way, less what the apps need
     if (kind == kWgDivider) return kWegSep - 2 * kWegGap; // with the gaps either side, as wide as the dock's own separators
-    if (size <= 0 || !(wg::Info(kind).sizes & (1 << size))) return kIcon; // small, or a widget that only comes small
+    if (kind == kWgMedia && Vert()) return size > 0 ? 168.0f : 76.0f; // a column: the song runs along it as astraeus' side pill, its title turned when medium or large
+    if (Vert()) return kIcon; // a column: every widget at its small face
+    if (size <= 0 || size > 2 || !(wg::Info(kind).sizes & (1 << size))) return kIcon; // small, or a widget that only comes small
+    if ((kind == kWgNet || kind == kWgBattery || kind == kWgWeather) && fitW[kind] > 0) return (std::max)(kIcon, fitW[kind]); // sized to its words
     static const float kMedium[kWgCount] = {176, 40, 82, 76, 96, 76, 136, 92, 40, 40, 136, 136, 156, 136, 92, 112, 136, 136, 136, 40, 136, 104, 84, 124, 116, 80};
     static const float kLarge[kWgCount] = {236, 40, 184, 176, 176, 176, 196, 156, 40, 40, 196, 196, 216, 196, 160, 184, 196, 196, 196, 40, 196, 160, 140, 196, 184, 132};
     return size == 1 ? kMedium[kind] : kLarge[kind];
@@ -82,7 +129,8 @@ float Bar::WidgetW(int kind, int size) const {
 
 float Bar::WidgetsW() const {
     float w = 0;
-    for (const WgSlot& s : wgSlots) w += WidgetW(s.kind, s.size) + kWegGap;
+    for (const WgSlot& s : wgSlots)
+        if (float sw = WidgetW(s.kind, s.size); sw > 0 || s.kind != kWgMedia) w += sw + kWegGap; // a song switched off takes no gap either
     return w > 0 ? w - kWegGap : 0;
 }
 
@@ -101,7 +149,7 @@ std::wstring Bar::WgTip(int kind) const {
 
 void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool live) {
     Canvas& c = ui.C();
-    if (!(wg::Info(kind).sizes & (1 << size))) size = 0;
+    if (size < 0 || size > 2 || !(wg::Info(kind).sizes & (1 << size))) size = 0; // a space carries its width here, not a face size
     float cx = (r.left + r.right) / 2, mid = (r.top + r.bottom) / 2;
     bool tiny = size == 0, large = size == 2;
     double now = (double)GetTickCount64() / 1000;
@@ -121,7 +169,24 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
         mediaR = r, mediaSize = size;
         DrawMediaTile(t, live);
         break;
+    case kWgDrives: { // a disk and how many there are
+        bool usb = std::any_of(drives.begin(), drives.end(), [](const DriveRow& d) { return d.removable; });
+        c.Icon(usb ? glyph::SysUsb : glyph::SysDrive, {cx, mid - 4}, 18, usb ? t.accentHi : t.textDim);
+        badge(std::to_wstring(drives.size()), t.text);
+        break;
+    }
+    case kWgSpace: // empty room: nothing at all in the dock, a faint outline while arranging
+        if (!live) {
+            c.Fill(Inset(r, 2, 4), TileRadius() - 2, t.text.Alpha(0.04f));
+            c.Icon(glyph::More, {cx, mid}, 16, t.textLow);
+        }
+        break;
     case kWgDivider: { // the dock's own separator, wherever it's put
+        if (Vert()) { // across the column
+            float ly = std::round(mid * scale) / scale;
+            c.Line({r.left + Width(r) * 0.25f, ly}, {r.left + Width(r) * 0.75f, ly}, t.text.Alpha(0.14f), 1, false);
+            break;
+        }
         float lx = std::round(cx * scale) / scale; // on a whole pixel, so the hairline stays crisp
         c.Line({lx, r.top + Height(r) * 0.25f}, {lx, r.top + Height(r) * 0.75f}, t.text.Alpha(0.14f), 1, false);
         break;
@@ -458,13 +523,12 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
     }
     case kWgBattery: {
         std::wstring pct = status.battery && status.percent >= 0 ? std::to_wstring(status.percent) + L"%" : L"AC";
-        Color ink = status.saver ? t.accentHi : t.text;
+        Color ink = status.charging || status.saver ? t.accentHi : t.text; // charging: the glyph's own bolt, lit
         if (tiny) {
             c.Icon(BatteryGlyph(status), {cx, mid - 4}, 17, ink);
             badge(pct, t.textDim);
         } else {
             lines(BatteryGlyph(status), ink, pct, large ? (status.charging ? L"Charging" : status.battery ? L"On battery" : L"Plugged in") : L"");
-            if (status.charging && !large) c.Icon(glyph::Bolt, {r.right - kPad - 6, mid}, 13, t.accentHi, true);
         }
         break;
     }

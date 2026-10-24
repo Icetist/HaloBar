@@ -19,6 +19,10 @@ public:
     bool Deliver(LPARAM lp); // a finished read posted back as msg; true if it was still wanted
     bool Pending(const std::wstring& key) const; // asked for, still being read
     ID2D1Bitmap* Get(ID2D1DeviceContext* ctx, const TaskApp& app, UINT px); // null until it's read, or if the app has no icon at all
+    IWICBitmapSource* Pixels(const std::wstring& key) const { // what's been read for an app, null if nothing yet: for windows with their own targets
+        auto it = map.find(key);
+        return it == map.end() ? nullptr : it->second.px.Get();
+    }
     void Drop(); // the device is going: gpu copies go, pixels stay
     void Keep(const std::vector<TaskApp>& apps); // forget apps that have closed, look again for ones that had no icon yet
 

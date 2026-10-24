@@ -8,6 +8,8 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 constexpr int kBlobs = 5; // a few big soft blobs across the player, as on island's media card
+constexpr double kQuietRebindSec = 2.5; // a song this long without a sound is listened for on the default output again
+constexpr WPARAM kIslandStage = 110; // astraeus' host opens its fullscreen player on this command
 
 std::wstring Clock(double seconds) {
     int s = (int)(std::max)(0.0, seconds);
@@ -61,23 +63,32 @@ void Bar::OnMedia() {
 
 void Bar::SyncCover() {
     uint64_t id = hasTrack ? track.coverId : 0;
+    bool bytes = hasTrack && track.cover && !track.cover->empty();
     if (id != coverId) { // a new song's art: decode once, colors from it
         coverId = id;
         cover.Reset();
         coverBlur.Reset();
         coverSrc.Reset();
-        if (hasTrack && track.cover && !track.cover->empty()) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512);
-        if (coverSrc) SetMedia(Make(mediaSeed = theme::FromBmp(coverSrc.Get())));
+        if (bytes) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512);
+        coverTint = coverSrc != nullptr;
+        if (coverTint) SetMedia(Make(mediaSeed = theme::FromBmp(coverSrc.Get())));
         else SetMedia(shellTo);
     }
-    if (coverSrc && !cover && ctx && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover)))
+    if (!coverTint || cover || !ctx) return;
+    if (!coverSrc && bytes) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512); // a new device: the same art again
+    if (coverSrc && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover))) {
         coverBlur = gfx::BakeBlur(ctx.Get(), cover.Get(), 26.0f); // heavy blur for the player's backdrop, baked once
+        coverSrc.Reset(); // on the device now: its megabyte of pixels goes
+    }
 }
 
 bool Bar::StepBars(float dt, double now) {
     bool playing = hasTrack && track.playing;
     float l = 0, r = 0;
     if (playing && !meter.Read(l, r)) meter.Refresh(); // the output changed under us: listen to the new one
+    if (!playing || l + r > 0.0001f) quietSince = -1;
+    else if (quietSince < 0) quietSince = now;
+    else if (now - quietSince > kQuietRebindSec) meter.Refresh(), quietSince = now; // the old output still answers, with silence: headphones came along mid-song
     float level = std::sqrt((l + r) / 2); // sqrt lifts quiet passages so the bars stay alive
     bool moving = false;
     for (int i = 0; i < 4; ++i) {
@@ -96,10 +107,12 @@ void Bar::DrawBars(float dt, double now, bool step) { // the row's mini visualiz
     float a = anim::Clamp01((mediaShow - 0.4f) / 0.6f), cy = (barsRect.top + barsRect.bottom) / 2;
     if (a <= 0) return;
     const Theme& mt = mediaNow; // the song's own colors
+    float cx = (barsRect.left + barsRect.right) / 2;
     for (int i = 0; i < 4; ++i) {
         float v = bars[i], bh = 3 + 11 * v; // island's pill bars
         barsDrawn[i] = v;
-        canvas->Fill(Rect(barsRect.left + i * 6, cy - bh / 2, 3.5f, bh), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(a));
+        if (Vert()) canvas->Fill(Rect(cx - bh / 2, barsRect.top + i * 6, bh, 3.5f), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(a)); // a side dock: they grow across, as astraeus' side pill
+        else canvas->Fill(Rect(barsRect.left + i * 6, cy - bh / 2, 3.5f, bh), 1.75f, mt.accent.Mix(mt.accentHi, v).Alpha(a));
     }
 }
 
@@ -194,10 +207,27 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
     rt->PushLayer(D2D1::LayerParameters(pill, shape, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), a), nullptr);
     float px = W / 2 - kMediaW / 2, y0 = pill.top + CallH() + 22; // laid out at full width, so nothing slides as it opens
     D2D1_RECT_F art = Rect(px + 24, y0, 134, 134);
+    HWND island = hasTrack ? FindWindowW(L"AstraeusHost", nullptr) : nullptr; // astraeus is here: its fullscreen player, the one with the lyrics
+    Ui::Hit artHit = island ? ui.Button(Ui::Id("mp.art"), art) : Ui::Hit{};
+    float lift = ui.Smooth(Ui::Id("mp.art", 1), artHit.hover ? 1.0f : 0, 14);
+    D2D1_RECT_F face = Inset(art, -Width(art) * 0.025f * lift, -Width(art) * 0.025f * lift); // very slightly bigger, as astraeus' cover
     c.Glow({(art.left + art.right) / 2, (art.top + art.bottom) / 2 + 8}, 84, 84, Color{0, 0, 0, 0.35f}); // a soft shadow under the art
-    c.Fill(art, 20, t.cardHi);
-    if (cover) c.Art(cover.Get(), coverBlur.Get(), art, 20);
+    c.Fill(face, 20, t.cardHi);
+    if (cover) c.Art(cover.Get(), coverBlur.Get(), face, 20);
     else c.Icon(glyph::Music, {(art.left + art.right) / 2, (art.top + art.bottom) / 2}, 52, t.textLow);
+    if (lift > 0.01f) { // say what a click does, the tip astraeus shows on its own cover
+        constexpr float kTipW = 104, kTipH = 28;
+        D2D1_RECT_F tip = Rect((art.left + art.right) / 2 - kTipW / 2, art.bottom - kTipH - 10 + 4 * (1 - lift), kTipW, kTipH);
+        Color fill = t.bg;
+        fill.a = 0.94f; // solid even in glass, it sits on the cover
+        c.Fill(tip, kTipH / 2, fill.Alpha(lift));
+        c.StrokeV(tip, kTipH / 2, t.hairTop.Alpha(lift), t.hairBot.Alpha(lift), 1);
+        c.Text(L"Fullscreen?", tip, Weight::Medium, 12, t.text.Alpha(lift), Align::Center);
+    }
+    if (artHit.clicked) {
+        PostMessageW(island, WM_COMMAND, kIslandStage, 0);
+        SetPanel(Panel::None);
+    }
 
     float x = art.right + 22, w = px + kMediaW - 26 - x; // the song and its controls
     c.TextSp(Upper(track.app), Rect(x, y0, w, 14), Weight::Medium, 10.5f, t.accent, 1.6f);

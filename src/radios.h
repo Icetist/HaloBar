@@ -12,6 +12,7 @@ public:
     Radios(const Radios&) = delete;
     Radios& operator=(const Radios&) = delete;
     void Start(HWND notify, UINT msg);
+    void Recheck(); // a radio missing at start looked for again: usb adapters and sign-in come up late
     bool HasWifi() const;
     bool HasBt() const;
     bool WifiOn() const;

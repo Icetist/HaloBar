@@ -33,7 +33,7 @@ struct Badge { // what an app told the taskbar about one of its windows through 
 // The pinned apps come first, in the windows taskbar's own order, whether they run or not.
 class Tasks {
 public:
-    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle, kOverflow, kIsland }; // kisland: astraeus island's window appeared // wparam of the posted message; ktitle: only the front window's title moved; koverflow: windows' tray flyout opened or closed
+    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle, kOverflow, kIsland }; // wparam of the posted message; ktitle: only the front window's title moved; koverflow: windows' tray flyout opened or closed; kisland: astraeus island's window appeared
     Tasks(HWND notify, UINT msg);
     ~Tasks();
     Tasks(const Tasks&) = delete;
@@ -50,6 +50,8 @@ public:
     const Badge* BadgeOf(const TaskApp& a) const; // the most telling badge of its windows, null if none
     void Click(int app); // bring back, minimize or cycle its windows, or start it, like the windows taskbar
     void Launch(int app, bool admin = false); // another window of it; admin asks for elevation, as ctrl+shift+click does
+    bool CanOpen(int app) const; // files dropped on it have somewhere to go
+    bool OpenWith(int app, const std::vector<std::wstring>& files); // as dropping files onto windows' taskbar: the app opens them
     void CloseAll(int app);
     static void Activate(HWND h);
 

@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dcomp.h>
+#include <ole2.h>
 
 #include <algorithm>
 #include <atomic>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <map>
 #include <vector>
 
 #include "anim.h"
@@ -52,6 +54,9 @@ constexpr UINT WM_APP_UPDATE = WM_APP + 17; // wparam: sys::Updater::Result
 constexpr UINT WM_APP_POLLED = WM_APP + 18; // lparam: a new Bar::Polled, from the poller thread
 constexpr UINT WM_APP_WX = WM_APP + 19; // the forecast arrived
 constexpr UINT WM_APP_PHOTO = WM_APP + 24; // lparam: a photo's pixels, decoded off the ui thread
+constexpr WORD kIslandBack = 120; // astraeus sends this as its fullscreen player, opened from our cover, closes
+constexpr UINT WM_APP_HALOICON = WM_APP + 25; // clicks on halobar's own tray icon
+constexpr UINT WM_APP_WINKEY = WM_APP + 26; // win + a number: wparam the spot, from 0
 constexpr UINT WM_APP_ICON = WM_APP + 22; // lparam: an app icon read on the icon thread
 constexpr UINT WM_APP_STATSRC = WM_APP + 21; // lparam: a new sys::StatSrc, made off the ui thread
 constexpr UINT WM_APP_PICK = WM_APP + 20; // the color picker finished: wparam 0x00RRGGBB, lparam 1 picked, 0 cancelled
@@ -77,6 +82,10 @@ int VolumeGlyph(float level, bool muted);
 class Bar {
 public:
     void SetMoon(HMONITOR m) { moon = true, moonScreen = m; } // another screen's dock: the taskbar, the tray and updates stay with the main one
+    bool SameScreen() const { // a moon's screen is still there, where it was
+        MONITORINFO mi = {sizeof(mi)};
+        return GetMonitorInfoW(moonScreen, &mi) && EqualRect(&mi.rcMonitor, &monitor);
+    }
     HMONITOR Screen() const { return mon; }
     static HMONITOR MainScreen(); // the main dock's screen: the one picked in settings, else windows' main one
     static std::vector<HMONITOR> Screens(); // every screen, left to right
@@ -90,6 +99,9 @@ public:
     bool NeedsFrame() const { return needsFrame; }
     HANDLE FrameWait() const { return frameWait; } // waitable timer that paces frames while something moves
     HANDLE PrefsWait() const { return prefsEv; } // set when island's settings change, null without island
+    DWORD DragOver(POINT screen, bool files); // a file held over the dock: the app under it comes up; says whether a drop opens it there
+    void DragGone();
+    DWORD Drop(POINT screen, const std::vector<std::wstring>& files);
     void OnPrefs();
     HANDLE NotifWait() const { return notifWatch; } // set when windows' notification store is written: a new one may have come
     void OnNotifWrite();
@@ -126,7 +138,7 @@ public:
     static constexpr float kSheetW = 380; // and into an app's sheet
     static constexpr float kLaunchW = 800; // and into the apps menu
     static constexpr float kQsW = 460, kCalW = 720, kNotifW = 360; // and into quick settings, or the clock: notifications beside the calendar
-    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30;
+    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32;
     static constexpr UINT kTitleMs = 200; // title changes: at most five top bar frames a second
     static constexpr UINT kUpdateFirstMs = 60 * 1000, kUpdateEveryMs = 6 * 60 * 60 * 1000; // a minute after start, then a few times a day
     static constexpr UINT kCalWaitMs = 5 * 60 * 1000;
@@ -151,7 +163,7 @@ private:
     void StartMenu();
     void ShowPreview(); // the hovered app's window thumbnails, over its slot
     bool AutoHide() const { return cfg.room != 0; } // windows take the whole screen; the dock slips away while one covers it
-    enum Mod { kModDesks, kModTitle, kModTray, kModLang, kModBt, kModNet, kModVol, kModBat, kModBell, kModQs, kModClock, kModDesktop, kModCount }; // desktop: show desktop, at the dock's far right // the top bar's modules, in order; a bit each in cfg.mods
+    enum Mod { kModDesks, kModTitle, kModTray, kModLang, kModBt, kModNet, kModVol, kModBat, kModBell, kModQs, kModClock, kModDesktop, kModCount }; // the status modules, in order, a bit each in cfg.mods; desktop: show desktop, at the dock's far right
     bool Shows(int m) const { return (cfg.mods >> m) & 1; }
     float modAt[kModCount] = {}; // each status module's middle this frame, negative when it isn't shown: panels opened from elsewhere hang from it
     bool TopOn() const { return false; } // the top bar is retired: its status sits at the dock's end, the top edge is astraeus'
@@ -164,7 +176,7 @@ private:
     void ShowDesktop();
     static constexpr int kLogo = 0; // LabelButton's glyph for the windows logo
     bool LabelButton(const Theme& t, uint32_t id, const D2D1_RECT_F& r, int glyph, const wchar_t* label); // a pill with an icon and words, the same everywhere
-    void WinLogo(D2D1_POINT_2F c, float size, Color top, Color bottom); // hairlines between the row's groups: song, apps, tray, clock
+    void WinLogo(D2D1_POINT_2F c, float size, Color top, Color bottom); // windows' four panes, drawn: the icon font has no logo
     float LaunchRise() const; // bar_launch.cpp: the app launcher
     void OpenLauncher();
     void OnApps(WPARAM step, LPARAM lp);
@@ -185,6 +197,8 @@ private:
     void CloseAll() { SetPanel(Panel::None); }
     bool AnyOpen() const { return mediaOpen || trayOpen || setOpen || sheetOpen || qsOpen || calOpen || launchOpen || wgOpen; }
     void SetPref(int& field, const wchar_t* name, int value); // saved, and applied right away
+    void SetEdge(int e); // the dock moves to another screen edge, in every dock, with no restart
+    void ToEdge(int e); // this dock's share of it
     void ClaimTray(); // apps' tray icons come to the bar from now on
 
     bool EnsureDev();
@@ -193,6 +207,7 @@ private:
     UINT IconPx() const { return (UINT)(std::max)(16L, std::lround(kAppIcon * scale)); } // the size on the dock's tiles, in pixels: drawn 1:1 there, so it stays sharp
     void Redraw();
     void Arm(double seconds);
+    bool Caret(); // a text field's blinking caret: shown now or not, with a frame booked for its next flip
     void Idle(); // still for a while: efficiency mode, caches handed back
 
     int LookNow() const; // the look in use: 0 dark, 1 light, 2 glass, 3 island's custom
@@ -201,7 +216,11 @@ private:
     float TileRadius() const { return kTileRadius; }
     void BelowIsland(); // astraeus hangs over the toolbar's middle: the bar keeps just under it
     void KeepOnTop(); // windows can lift a maximized app over topmost windows: the dock climbs back
+    void HaloIcon(bool show); // halobar's own icon in the tray, its dashboard a click away
     float Blur() const;
+    bool OwnOpacity() const { return cfg.look != prefs::Settings::kFollow || !islandHere; } // following island: its opacity, as its look
+    float Opacity() const { return (OwnOpacity() ? cfg.opacity : look.bgOpacity) / 100.0f; }
+    Color Body(const Theme& t) const { return t.glass ? t.bg : t.bg.Alpha(Opacity()); } // the material's body: the solid looks let the desktop through, glass is the blur's
     static constexpr float kZoomMax = 1.12f; // large: the surface is made this tall, so a size change never rebuilds it
     float Zoom() const { return cfg.size == 0 ? 0.9f : cfg.size == 2 ? kZoomMax : 1.0f; }
     Theme Make(Seed s) const; // a palette in the bar's current look
@@ -225,7 +244,7 @@ private:
     ComPtr<ID2D1Geometry> BuildShape() const;
     mutable ComPtr<ID2D1Geometry> shapeCache; // the outline for shapeFor, reused while the island holds still
     mutable D2D1_RECT_F shapeFor{};
-    D2D1_RECT_F Outer() const { return Union(Union(barR, Inset(wegR, -8, -34)), CardOnScreen()); } // all a frame paints: the dock's tooltips rise above it
+    D2D1_RECT_F Outer() const { return Union(Union(barR, DockArea()), CardOnScreen()); } // all a frame paints: the dock's tooltips rise above it
     const TaskApp* FindApp(const std::wstring& key) const;
     float TextW(const std::wstring& s, Weight w, float size);
     void DrawApp(const TaskApp* a, const D2D1_RECT_F& r, float alpha, const Theme& t, UINT px = 0); // its icon (px: the pixels wanted, 0 the dock's), or its initial on a tile
@@ -248,14 +267,23 @@ private:
     // bar_tool.cpp: the toolbar across the top and the dock at the bottom
     void DrawToolbar(const Theme& t);
     void DrawWeg(const Theme& t);
-    void PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float shade); // a capsule or the dock: the material, its gloss, a hairline rim
+    void PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float shade, const D2D1_RECT_F* only = nullptr); // a capsule or the dock: the material, its gloss, a hairline rim; only: the one box a pass repaints
+    static bool Within(const D2D1_RECT_F& in, const D2D1_RECT_F& r, float radius, float depth); // a box at least depth inside a rounded rect
     float DrawStatus(const Theme& t, float x, float cy, float h, bool dock); // tray, keyboard, the status cluster, the clock, left to right from x; returns the width
     void DrawMediaTile(const Theme& t, bool live); // the song's spot in the dock; live false: pixels only, for the visualizer's own frames
     void SyncClockText(); // the clock's words, formatted once a minute
     ComPtr<ID2D1Geometry> Chrome(); // toolbar, dock and an open dropdown, on screen: what the blur shows through
     bool Module(uint32_t id, const D2D1_RECT_F& r, bool lit); // one toolbar module's hover plate; true when clicked
     float ModuleW(const std::wstring& text, int icons, Weight weight = Weight::Regular); // padding, icons and text
-    void Anchor(float x, bool down) { anchorX = x, cardDown = down; } // where the next dropdown hangs from
+    void Anchor(float x, bool down) { anchorX = x, cardDown = down; } // where the next dropdown hangs from: a point along the dock
+    bool Vert() const { return cfg.edge == 1 || cfg.edge == 2; } // the dock stands at the left or right edge
+    float Along(D2D1_POINT_2F p) const { return Vert() ? p.y : p.x; } // where along the dock a point is
+    float Mid(const D2D1_RECT_F& r) const { return Vert() ? (r.top + r.bottom) / 2 : (r.left + r.right) / 2; } // an item's middle along the dock
+    D2D1_RECT_F Spot(float at, float len, float cross) const { return Vert() ? Rect(cross, at, kIcon, len) : Rect(at, cross, len, kIcon); } // an item's tile: along the row, or down the column
+    D2D1_RECT_F TipRect(const D2D1_RECT_F& over, float tw) const;
+    mutable D2D1_RECT_F tipNow{}; // the name pills drawn this frame: they sit off the dock, so the window region takes them in // a hovered item's name pill: over the row, or beside the column
+    D2D1_RECT_F DockArea() const; // the dock, its shadow and its tooltips
+    void DrawWegCol(const Theme& t); // the dock standing at a side edge
     void ShowPowerMenu();
     void ShowUserMenu();
     void AppMenu(); // menuApp's menu, after the frame that right clicked it
@@ -311,12 +339,20 @@ private:
 
     // bar_widgets.cpp, bar_wgdraw.cpp, bar_wgpanel.cpp: the dock's widgets, picked, ordered and sized in its edit mode; the song and the bin are widgets too
     enum Wg { kWgMedia, kWgBin, kWgWeather, kWgStats, kWgFocus, kWgWater, kWgClip, kWgPicker, kWgShot, kWgEmoji, kWgFiles, kWgNotes, kWgCalendar, kWgTodo,
-              kWgClock, kWgProgress, kWgToggles, kWgAudio, kWgSearch, kWgSwitch, kWgFolder, kWgNet, kWgBattery, kWgHabit, kWgRetired, kWgPhoto, kWgDivider, kWgApps, kWgCount }; // retired: once crypto, its number kept so saved layouts still line up
+              kWgClock, kWgProgress, kWgToggles, kWgAudio, kWgSearch, kWgSwitch, kWgFolder, kWgNet, kWgBattery, kWgHabit, kWgRetired, kWgPhoto, kWgDivider, kWgApps, kWgDrives, kWgSpace, kWgCount }; // retired: once crypto, its number kept so saved layouts still line up
+    static constexpr int kSpaceMin = 8, kSpaceMax = 480, kSpaceDef = 48, kSpaceStep = 16; // the space widget: its width in dips lives in its slot's size
+    static bool Many(int kind) { return kind == kWgDivider || kind == kWgSpace; } // added again on every pick, never "in"
+    int spaceFrom = 0; // the space's width as its edge was grabbed
+    float spaceCap = 1e9f, spaceSlack = 0; // no space wider than the cap, so every app fits; the room still free for them to grow into
+    std::vector<float> spaceWs; // Layout's scratch: each space's own width this frame
     static constexpr int kWgGallery = 100; // wgKind while edit mode's gallery is up
     struct WgSlot {
         int kind = 0, size = 1; // size: 0 small, 1 medium, 2 large
     };
     std::vector<WgSlot> wgSlots; // in dock order
+    float fitW[kWgCount] = {}; // net, battery and weather: as wide as their words, measured as the numbers change; 0 until first measured
+    double fitLow[kWgCount] = {}; // since when a shorter text has wanted less room
+    void SyncFit(); // grows a fitted widget at once, shrinks it only once a shorter text has held a while
     bool HasWg(int w) const;
     float WidgetW(int kind, int size) const;
     float WidgetsW() const; // the group, without separators; 0 with none
@@ -343,6 +379,15 @@ private:
     void OnPick(WPARAM rgb, LPARAM ok);
     void StepFocus();
     void LoadFiles(const std::wstring& dir);
+    struct DriveRow {
+        wchar_t letter = 0;
+        std::wstring label;
+        ULONGLONG total = 0, free = 0;
+        bool removable = false;
+    };
+    std::vector<DriveRow> drives; // read when the drives widget opens or windows says a drive came or went
+    void LoadDrives();
+    static void Eject(wchar_t letter); // the shell's own eject: windows says when it's safe
     bool Typing() const { return wgOpen && (wgKind == kWgNotes || wgKind == kWgTodo || wgKind == kWgHabit); } // a panel that takes the keyboard
     void WgChar(wchar_t ch);
     void SaveNote();
@@ -393,6 +438,34 @@ private:
     std::vector<Habit> habits;
     ComPtr<IWICBitmapSource> photoSrc;
     ComPtr<ID2D1Bitmap> photoBmp;
+    std::map<std::wstring, std::wstring> iconPaths; // an app's own icon picked by the user, by app key
+    std::map<std::wstring, ComPtr<ID2D1Bitmap>> customBmps; // and made on the device, once
+    ID2D1Bitmap* CustomIcon(const std::wstring& key, UINT px);
+    void LoadIconPaths();
+    void PickIcon(const std::wstring& key); // a file picker; empty key: the choice is cleared
+    ComPtr<ID2D1Bitmap> haloLogo; // the start button's face when it's halobar's own
+    void StartMark(D2D1_POINT_2F o, float size, const Theme& t);
+    void StartMark(D2D1_POINT_2F o, float size, int face, Color hi, Color lo); // either face, in any ink: settings shows both
+    int dockKey = -1; // win + t: the app the keyboard is on, -1 none
+    HWND keyBack = nullptr; // where the keyboard came from, and goes back to
+    void FocusDock(int step); // win + t, with shift backwards
+    void DockKey(WPARAM vk);
+    void LeaveDock(bool back);
+    int dropApp = -1; // the app a dragged file is held over
+    ULONGLONG dropSince = 0;
+    bool dropRaised = false;
+    ComPtr<IDropTarget> dropper;
+    void SyncDrop();
+    int AppAt(POINT screen) const;
+    std::unordered_map<uint64_t, D2D1_RECT_F> trayAt; // each tray icon's place in the last full frame: apps ask where theirs is
+    bool ScreenRect(const D2D1_RECT_F& r, RECT& out) const;
+    HHOOK keyHook = nullptr; // win + 1..9, only while the taskbar is ours and the setting is on
+    void SyncKeyHook();
+    static LRESULT CALLBACK OnKey(int code, WPARAM wp, LPARAM lp);
+    bool maxHere = false; // a maximized window on this screen: an adaptive dock runs the full width
+    float rowContent = 0; // what the dock's items need along it, whatever width it's drawn at
+    std::vector<size_t> trayOnly; // tray icons of apps with no window on the taskbar: shown among the apps
+    void SyncTrayOnly();
     std::wstring photoPath;
     std::atomic<bool> photoBusy{false};
     uint64_t netIn = 0, netOut = 0; // byte counters at the last tick
@@ -418,7 +491,10 @@ private:
     void SetMods(const Theme& t, const D2D1_RECT_F& r); // which status modules the dock shows
     void SetWidgets(const Theme& t, const D2D1_RECT_F& r); // the way into the dock's edit mode
     void SetApp(const Theme& t, const D2D1_RECT_F& r); // updates, and handing the taskbar back to windows
+    void SetExtras(const Theme& t, const D2D1_RECT_F& r); // keys, width, tray apps
+    void SetStart(const Theme& t, const D2D1_RECT_F& r); // the start button's face
     void SetScreens(const Theme& t, const D2D1_RECT_F& r); // one screen or every screen, and which is the main one
+    void SetPlace(const Theme& t, const D2D1_RECT_F& r); // a little monitor: tap where the dock goes, an edge or a spot along the bottom
     float setScroll = 0; // how far the settings sheet is scrolled, eased toward
     void SetSong(const Theme& t, const D2D1_RECT_F& r);
     void SetClock(const Theme& t, const D2D1_RECT_F& r);
@@ -428,6 +504,7 @@ private:
     bool OpenGlass();
     void FreeGlass();
     void GlassMask(ID2D1Geometry* shape);
+    void SyncMask(); // GlassMask with this frame's chrome, only when it moved
     void SampleBehind(); // how bright the screen is where the island grows: bright pages get island's smoked glass
     HRESULT BeginSurface(const RECT& px, IDXGISurface** out, POINT* off);
     void EndSurface();
@@ -509,7 +586,7 @@ private:
     bool binFull = false;
     void SyncBin(); // empty or not: asked on the slow timer, windows doesn't say
     void BinMenu();
-    std::unordered_map<std::wstring, float> textWs; // toolbar strings, measured once
+    std::unordered_map<uint64_t, std::pair<std::wstring, float>> textWs; // strings' widths, measured once each, by a hash of words, weight and size
     D2D1_RECT_F mediaR{}, trayR{}, startR{}; // modules other code aims at: the song, the tray chevron, the start button
     std::wstring lang, langSub, langName; // "ENG" over "US", and the layout's full name; empty with a single layout
     uint64_t langKey = 0; // the layout and installed list those were read for: naming a variant walks the whole registry list
@@ -520,7 +597,7 @@ private:
     int moreN = 0; // and those that don't: behind the "+N" tile
     float appsW = 0; // the apps block's width, worked out in Layout
     float slotW = kSlot; // each app's room in the row this frame
-    std::wstring mediaMeasured; // title and artist the row was last sized for
+    std::wstring mediaMeasured, mediaMeasuredBy; // title and artist the row was last sized for
     anim::Spring peekSpring; // the notification pill
     anim::Spring callSpring, mediaSpring, traySpring, setSpring, sheetSpring, qsSpring, calSpring, launchSpring; // how much taller the island has grown for each
     bool mediaOpen = false, trayOpen = false, setOpen = false, sheetOpen = false, qsOpen = false, calOpen = false, launchOpen = false; // set together by SetPanel
@@ -542,6 +619,7 @@ private:
     std::unordered_map<std::wstring, D2D1_RECT_F> slots; // each app's place in the row this frame: thumbnails and minimize animations aim there
     float sink = 0; // auto-hide: 0 showing, 1 tucked below the screen's edge
     bool covered = false, peek = false; // a window sits where the island rests; the mouse came to the edge to call it back
+    POINT parkedAt{LONG_MIN, LONG_MIN}; // the cursor as the dock tucked away: the edge strip appearing under a still cursor is no call back
     HWINEVENTHOOK coverHooks[3] = {}, moveHook = nullptr; // what moves windows: focus, drags, minimizes; and the app in front's own moves
 
     sys::Radios radios;
@@ -590,8 +668,21 @@ private:
     std::vector<int> launchHits; // what it shows: indices into apps, or -(row place + 1) for a pin
     int launchSel = 0;
     bool launchAll = false; // all apps rather than the favourites
+    struct LaunchRow {
+        int kind = 0, idx = 0, sel = -1; // kind: 0 a letter (idx is it), 1 an app, 2 a folder, 3 an app inside an open folder; sel: its place among the pickable rows
+        float y = 0, h = 0;
+    };
+    std::vector<LaunchRow> launchRows; // all apps as start lists it: letters, apps and folders, laid out once per change
+    std::vector<int> launchListHits; // the pickable rows' targets, as launchHits holds them
+    std::vector<std::wstring> launchFolders, launchOpenDirs; // the folders in the list; the ones opened
+    double launchRowsAt = -1; // the list the rows were made from
+    int launchDirsVer = 0, launchRowsVer = -1;
+    void BuildLaunchRows();
+    void DrawLaunchList(const Theme& t, const D2D1_RECT_F& body, int& pick);
+    bool LaunchList() const { return launchAll && query.empty(); } // all apps: start's list, not the grid
     float launchScroll = 0;
     D2D1_POINT_2F lastLaunchMouse{};
+    std::unordered_map<std::wstring, ComPtr<IDWriteTextLayout>> launchLabels; // the tiles' two-line names, laid out once while the launcher is open
     std::vector<sys::Notif> notifs; // what windows' notification centre holds, newest first, read when the clock opens
     std::unordered_set<int64_t> notifGone; // dismissed here
     int64_t notifStamp = 0; // the database's last change, checked on the slow timer: a new one lights the clock's dot
@@ -638,10 +729,13 @@ private:
     sys::Track track;
     bool hasTrack = false;
     uint64_t coverId = 0;
-    ComPtr<IWICBitmapSource> coverSrc;
+    ComPtr<IWICBitmapSource> coverSrc; // the decoded art, only until it's on the device: decoded again from the song's bytes if the device goes
+    bool coverTint = false; // the song has art, and its colors tint the media
     ComPtr<ID2D1Bitmap1> cover;
     ComPtr<ID2D1Bitmap> coverBlur;
     float bars[4] = {}; // the row's mini visualizer, eased per frame
+    bool mediaCalm = false; // the song's pill was last drawn at rest: only then may the bars' fast frames repaint their square
+    double quietSince = -1; // playing yet silent since then: maybe the sound moved to another output
     float barsDrawn[4] = {}; // as last put on screen: a frame that wouldn't move them is skipped
     bool barsMoving = false;
     float preview = -1; // seek drag preview, -1 = none

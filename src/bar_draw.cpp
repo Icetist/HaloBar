@@ -1,7 +1,9 @@
 #include "bar.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <functional>
 
 #include "glyphs.h"
 #include "overflow.h"
@@ -20,6 +22,21 @@ uint32_t TrayId(uint64_t key) { return (uint32_t)(key ^ (key >> 32)) & ~0xFu; } 
 std::wstring Lower(std::wstring s) {
     for (auto& ch : s) ch = (wchar_t)towlower(ch);
     return s;
+}
+
+float SpaceLevel(const std::vector<float>& want, float free, float least) { // the widest any space may be so the rest fits: the biggest give way first
+    float total = 0;
+    for (float x : want) total += x;
+    if (total <= free) return 1e9f;
+    std::vector<float> w = want; // sorted copy, only when they don't all fit
+    std::sort(w.begin(), w.end(), std::greater<>());
+    float above = 0; // those cut down to the level
+    for (size_t i = 0; i < w.size(); ++i) {
+        above += w[i];
+        float level = (free - (total - above)) / (float)(i + 1); // the narrower ones keep their width
+        if (i + 1 == w.size() || level >= w[i + 1]) return (std::max)(least, level);
+    }
+    return least;
 }
 
 }
@@ -55,6 +72,10 @@ bool Bar::StepSprings(float dt) {
     return a || b || c || d || e || f || g || h || i; // any still moving keeps frames coming
 }
 
+namespace {
+constexpr float kSideGap = 10; // between a side dock and the panel beside it
+}
+
 bool Bar::Layout(float dt) {
     // the dock hides while a window overlaps it; the toolbar always stays
     float hideTo = AutoHide() && covered && !peek && !(AnyOpen() && !cardDown) && !card.Shown() && !Inside(wegHit, input.mouse) ? 1.0f : 0.0f;
@@ -69,9 +90,8 @@ bool Bar::Layout(float dt) {
     sinking = anim::Approach(shadeBotNow, shadeBot, 5, dt) || sinking;
 
     bool showMedia = cfg.song && hasTrack && !track.title.empty();
-    std::wstring key = showMedia ? track.title + L"\n" + track.artist : L""; // a newline can't appear in either, so the pair is unambiguous
-    if (showMedia && key != mediaMeasured) { // sized to the song, measured once per song
-        mediaMeasured = key;
+    if (showMedia && (track.title != mediaMeasured || track.artist != mediaMeasuredBy)) { // sized to the song, measured once per song; compared in place, no string built each frame
+        mediaMeasured = track.title, mediaMeasuredBy = track.artist;
         std::wstring line = track.artist.empty() ? track.title : track.title + L" - " + track.artist;
         mediaTextW = (std::clamp)(TextW(line, Weight::Regular, kBarText) + 2, 40.0f, 220.0f); // a long one is cut with an ellipsis
     }
@@ -80,21 +100,43 @@ bool Bar::Layout(float dt) {
     // the dock: start, show desktop, a separator, the apps, a separator, the recycle bin, the song; it packs closer before any app is left out
     int apps = tasks ? (int)tasks->Apps().size() : 0;
     float others = 0; // everything but the apps: start, the widgets with a gap after each (the apps' too), the status and show desktop
-    for (const WgSlot& s : wgSlots) others += (s.kind == kWgApps ? 0 : WidgetW(s.kind, s.size)) + kWegGap;
+    std::vector<float>& spaces = spaceWs; // the spaces' own widths: they give way before an app is left out; kept, so no allocation per frame
+    spaces.clear();
+    for (const WgSlot& s : wgSlots)
+        if (s.kind == kWgSpace) spaces.push_back((float)(s.size >= kSpaceMin ? s.size : kSpaceDef)), others += kWegGap;
+        else if (float w = s.kind == kWgApps ? 0 : WidgetW(s.kind, s.size); w > 0 || s.kind != kWgMedia) others += w + kWegGap; // a song switched off takes no room
     float ends = 2 * kWegPad + kSlot + kWegSep + others + (editing ? kIcon + kWegGap : 0) + (TopOn() ? 0 : kWegSep + statusW);
-    float room = W - 2 * kIcon - ends; // the screen's edges keep a margin
-    slotW = apps > 0 ? (std::clamp)(room / apps, kSlotMin, kAppSlot) : kAppSlot;
-    dockCount = (std::clamp)((int)(room / slotW), 0, apps);
-    if (dockCount < apps) dockCount = (std::clamp)((int)((room - kIcon - kWegGap) / slotW), 0, apps); // not all fit: one spot goes to the "+N" tile
+    float room = (Vert() ? winH : W) - 2 * kIcon - ends; // the screen's edges keep a margin
+    float free = room - apps * kAppSlot; // what the spaces may take with every app at full size
+    spaceCap = SpaceLevel(spaces, free, (float)kSpaceMin);
+    float spaced = 0;
+    for (float s : spaces) spaced += (std::min)(s, spaceCap);
+    spaceSlack = (std::max)(0.0f, free - spaced);
+    ends += spaced, room -= spaced;
+    SyncTrayOnly();
+    int extra = (std::min)((int)trayOnly.size(), (std::max)(0, (int)(room / kSlotMin) - 1)); // background apps from the tray, after the rest: they take room too
+    trayOnly.resize((size_t)extra);
+    slotW = apps + extra > 0 ? (std::clamp)(room / (apps + extra), kSlotMin, kAppSlot) : kAppSlot;
+    dockCount = (std::clamp)((int)(room / slotW) - extra, 0, apps);
+    if (dockCount < apps) dockCount = (std::clamp)((int)((room - kIcon - kWegGap) / slotW) - extra, 0, apps); // not all fit: one spot goes to the "+N" tile
     moreN = apps - dockCount;
-    appsW = (dockCount > 0 ? dockCount * slotW - kWegGap : 0) + (moreN > 0 ? (dockCount > 0 ? kWegGap : 0) + kIcon : 0);
-    float want = ends + appsW;
+    int shown = dockCount + extra;
+    appsW = (shown > 0 ? shown * slotW - kWegGap : 0) + (moreN > 0 ? (shown > 0 ? kWegGap : 0) + kIcon : 0);
+    rowContent = ends + appsW;
+    bool wideRow = !Vert() && (cfg.align || (cfg.adaptive && maxHere && !AutoHide())); // to one side, or stretched over a maximized window
+    float want = wideRow ? W - 2 * kWegMargin : rowContent; // to one side: the dock runs the screen's width, its two groups at the ends
     if (rowW <= 0) rowW = want; // first frame: no ease in from nothing
     moving = anim::Approach(rowW, want, 14, dt) || moving;
     float floorY = winH - kWegMargin + sink * (kWegH + kWegMargin + 4); // tucked: the whole dock below the screen's edge
     rowTop = floorY - kWegH;
     wegR = {W / 2 - rowW / 2, rowTop, W / 2 + rowW / 2, floorY};
     wegHit = {wegR.left, rowTop, wegR.right, winH}; // down to the screen's edge, so the mouse can rest there
+    if (Vert()) { // at a side: a column, centered on the screen's height; tucked, it slides out past that edge
+        float out = sink * (kWegH + kWegMargin + 4), left = cfg.edge == 1 ? kWegMargin - out : W - kWegMargin - kWegH + out, top = winH / 2 - rowW / 2;
+        rowTop = winH - kWegMargin - kWegH; // panels still lay out as over a bottom dock; cardOff carries them beside the column
+        wegR = {left, top, left + kWegH, top + rowW};
+        wegHit = cfg.edge == 1 ? D2D1_RECT_F{0, top, wegR.right, wegR.bottom} : D2D1_RECT_F{wegR.left, top, W, wegR.bottom};
+    }
 
     // a dropdown: laid out where it always grew, centered and rising from rowTop; cardOff hangs it under the toolbar, or over the dock
     float open = anim::Clamp01(mediaSpring.value / kMediaRise), pk = anim::Clamp01(PeekH() / kPeekRise);
@@ -110,18 +152,21 @@ bool Bar::Layout(float dt) {
     float grown = Grown();
     if (!AnyOpen() && grown - PeekH() - CallH() < 0.5f) cardDown = true, anchorX = W - 8 - kPeekW / 2; // a notification arrives in the top right corner; a closing popup keeps its place until it's gone
     pill = grown > 0.5f && wide > 1 ? D2D1_RECT_F{W / 2 - wide / 2, rowTop - grown, W / 2 + wide / 2, rowTop} : D2D1_RECT_F{};
-    float cx = (std::clamp)(anchorX, wide / 2 + 8, (std::max)(wide / 2 + 8, W - wide / 2 - 8)); // kept on screen
+    bool side = Vert() && !cardDown; // beside a column: the anchor is a height, the panel centered on it
+    float half = side ? grown / 2 : wide / 2, span = side ? winH : W;
+    float cx = (std::clamp)(anchorX, half + 8, (std::max)(half + 8, span - half - 8)); // kept on screen
     float cardWant = anchorX + (cx - anchorX) * openK; // centered on the icon while it's small, sliding to where it fits as it opens
     if (grown < 0.5f || cardX == 0) cardX = cardWant; // nothing showing: it starts on the icon
     else moving = anim::Approach(cardX, cardWant, 22, dt) || moving; // moved to another module while open: it glides there
     cardOff = {cardX - W / 2, cardDown ? kCardTop - pill.top : -10.0f};
+    if (side && pill.right > pill.left) cardOff = {cfg.edge == 1 ? wegR.right + kSideGap - pill.left : wegR.left - kSideGap - pill.right, cardX - grown / 2 - pill.top}; // next to the column, toward the screen's middle
     return moving;
 }
 
 void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // a panel: island's material, its gloss and rim
     if (!shape) return;
     Canvas& c = *canvas;
-    c.FillGeometry(shape, t.bg);
+    c.FillGeometry(shape, Body(t)); // the dock's opacity, so a panel reads as part of it
     if (!t.glass) return;
     if (glassShade > 0.01f) c.FillGeometry(shape, Color{0.02f, 0.02f, 0.04f, 0.45f * glassShade}); // smoked over a white page
     D2D1_RECT_F o = pill; // island's glass: gloss from the top, a bright rim
@@ -153,18 +198,32 @@ const TaskApp* Bar::FindApp(const std::wstring& key) const {
     return nullptr;
 }
 
-float Bar::TextW(const std::wstring& s, Weight w, float size) {
+float Bar::TextW(const std::wstring& s, Weight w, float size) { // measured once per string, weight and size: tips, chips and labels ask every frame
+    if (s.empty()) return 0;
+    constexpr size_t kMeasuredMax = 256; // titles and tips come and go: forget them all now and then
+    uint64_t key = 1469598103934665603ull; // fnv-1a over the words, then weight and size: looked up every frame without building a string
+    for (wchar_t ch : s) key = (key ^ (uint64_t)ch) * 1099511628211ull;
+    key = (key ^ (uint64_t)w) * 1099511628211ull;
+    key = (key ^ (uint64_t)std::lround(size * 8)) * 1099511628211ull; // the same words in another weight or size measure differently
+    if (auto it = textWs.find(key); it != textWs.end() && it->second.first == s) return it->second.second; // the words compared too: a hash alone could collide
     ComPtr<IDWriteTextLayout> lay;
     DWRITE_TEXT_METRICS m{};
-    if (s.empty() || FAILED(gfx::DWrite()->CreateTextLayout(s.c_str(), (UINT32)s.size(), gfx::TextFmt(w, size, Align::Left), 4096, 64, &lay)) || // wide enough never to wrap
+    if (FAILED(gfx::DWrite()->CreateTextLayout(s.c_str(), (UINT32)s.size(), gfx::TextFmt(w, size, Align::Left), 4096, 64, &lay)) || // wide enough never to wrap
         FAILED(lay->GetMetrics(&m)))
         return 0;
-    return m.widthIncludingTrailingWhitespace;
+    if (textWs.size() >= kMeasuredMax) textWs.clear();
+    float width = std::ceil(m.widthIncludingTrailingWhitespace) + 1; // a box exactly this wide can come up a hair short: the words wrap and trim to "Affin..."
+    textWs[key] = {s, width};
+    return width;
 }
 
 void Bar::DrawApp(const TaskApp* a, const D2D1_RECT_F& r, float alpha, const Theme& t, UINT px) {
     if (alpha <= 0.01f || Width(r) < 1) return; // invisible: skip the icon lookup too
     Canvas& c = ui.C();
+    if (ID2D1Bitmap* own = a && !iconPaths.empty() ? CustomIcon(a->key, px ? px : IconPx()) : nullptr) { // the one the user picked for it
+        c.Pixels(own, r, alpha);
+        return;
+    }
     if (ID2D1Bitmap* bmp = a ? icons.Get(ctx.Get(), *a, px ? px : IconPx()) : nullptr) { // cached per app, at the largest pixel size asked for
         c.Pixels(bmp, r, alpha);
         return;
@@ -266,6 +325,7 @@ void Bar::DrawTrayGrid(const Theme& t, ID2D1Geometry* shape) {
         float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
         if (hov > 0.01f) c.Fill(Inset(r, 3, 3), (kTrayCell - 6) / 2, t.text.Alpha(0.09f * hov));
         if (ID2D1Bitmap* b = TrayBitmap(items[i])) c.Image(b, Rect((r.left + r.right) / 2 - 10, (r.top + r.bottom) / 2 - 10, 20, 20), 0, 1);
+        trayAt[items[i].key] = r;
         if (h.clicked || (input.rclick && Inside(r, input.mouse))) pick = (int)i, right = !h.clicked, at = {(r.left + r.right) / 2, r.top}; // acted on after the layer pops
     }
     int ghostPick = -1;

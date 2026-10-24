@@ -4,7 +4,7 @@
 namespace wg {
 
 enum Cat { kCatAll, kCatMedia, kCatWork, kCatSystem, kCatTools, kCatCount };
-inline constexpr int kKinds = 28; // matches Bar::kWgCount
+inline constexpr int kKinds = 30; // matches Bar::kWgCount
 
 struct Meta {
     const wchar_t* name;

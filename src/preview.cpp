@@ -12,6 +12,7 @@ namespace {
 
 constexpr float kShotW = 196, kShotH = 112; // one window's thumbnail box, dips
 constexpr float kTitleH = 28, kPad = 10, kGap = 8, kRise = 10; // title line over it, card padding, between tiles, above the island
+constexpr float kHeadH = 24; // the app's name, a line over its windows
 constexpr float kRadius = 16; // island's card radius
 constexpr float kMediaH = 44; // the transport row under the thumbnails
 constexpr int kMaxTiles = 6; // more windows than this: the sheet lists them all
@@ -21,20 +22,23 @@ constexpr wchar_t kClass[] = L"HaloBarPreview";
 
 Preview::~Preview() { Hide(); } // thumbnails are dwm resources: always unregister
 
-void Preview::Show(HWND own, const std::wstring& k, const std::vector<Win>& wins, POINT at, float sc, const Theme& theme, int med) {
+void Preview::Show(HWND own, const std::wstring& k, const std::wstring& nm, const std::vector<Win>& wins, POINT at, float sc, const Theme& theme, int med, int sd) {
     if (wins.empty()) {
         Hide();
         return;
     }
     bool same = hwnd && k == key && wins.size() == tiles.size(); // hover fires every move: don't rebuild for nothing
     for (size_t i = 0; same && i < wins.size(); ++i) same = tiles[i].win.hwnd == wins[i].hwnd && tiles[i].win.title == wins[i].title;
+    same = same && nm == name;
     if (same && at.x == anchor.x && at.y == anchor.y && med == media) return; // already showing exactly this
     media = med;
     owner = own;
     key = k;
+    name = nm;
     scale = sc;
     t = theme;
     anchor = at; // screen point over the dock icon, in pixels
+    side = sd;
     Unthumb(); // old thumbnails point at the old tiles
     tiles.clear();
     for (size_t i = 0; i < wins.size() && (int)i < kMaxTiles; ++i) tiles.push_back({wins[i]}); // the rest stay reachable from the app sheet
@@ -77,18 +81,24 @@ void Preview::Hide() {
 void Preview::Layout() {
     int n = (int)tiles.size();
     W = kPad * 2 + n * kShotW + (n - 1) * kGap; // tiles side by side, one row
-    H = kPad + kTitleH + kShotH + kPad + ((media & kHasMedia) ? kMediaH : 0); // the transport row only when the app plays something
+    float top = kPad + (name.empty() ? 0 : kHeadH); // under the app's name
+    H = top + kTitleH + kShotH + kPad + ((media & kHasMedia) ? kMediaH : 0); // the transport row only when the app plays something
     if ((media & kHasMedia) && W < 200) W = 200; // room for the three buttons
     for (int i = 0; i < n; ++i) {
         float x = kPad + i * (kShotW + kGap);
-        tiles[i].box = {x, kPad, x + kShotW, kPad + kTitleH + kShotH}; // title and shot together: the hover target
-        tiles[i].shot = {x, kPad + kTitleH, x + kShotW, kPad + kTitleH + kShotH}; // where dwm draws the live window
+        tiles[i].box = {x, top, x + kShotW, top + kTitleH + kShotH}; // title and shot together: the hover target
+        tiles[i].shot = {x, top + kTitleH, x + kShotW, top + kTitleH + kShotH}; // where dwm draws the live window
     }
     int pw = (int)std::lround(W * scale), ph = (int)std::lround(H * scale);
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST), &mi);
     int x = (std::clamp)((int)(anchor.x - pw / 2), (int)mi.rcMonitor.left + 8, (int)(std::max)(mi.rcMonitor.left + 8, mi.rcMonitor.right - 8 - pw));
     int y = anchor.y - (int)std::lround(kRise * scale) - ph; // floats above the island
+    if (side) { // a side dock: beside it, centered on the icon
+        int rise = (int)std::lround(kRise * scale);
+        x = side == 1 ? anchor.x + rise : anchor.x - rise - pw;
+        y = (std::clamp)((int)(anchor.y - ph / 2), (int)mi.rcMonitor.top + 8, (int)(std::max)(mi.rcMonitor.top + 8, mi.rcMonitor.bottom - 8 - ph));
+    }
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, pw, ph, SWP_NOACTIVATE);
     if (rt) rt->Resize({(UINT32)pw, (UINT32)ph});
 }
@@ -158,6 +168,7 @@ void Preview::Paint() {
     rt->Clear(base.D2D());
     c.NewFrame();
     c.Stroke({0.5f, 0.5f, W - 0.5f, H - 0.5f}, kRadius, t.line, 1); // half-dip inset keeps the hairline crisp
+    if (!name.empty()) c.Text(name, {kPad + 4, kPad + 2, W - kPad - 4, kPad + kHeadH}, Weight::Semi, 13, t.text); // which app these are, as the pill says for one not running
     for (size_t i = 0; i < tiles.size(); ++i) {
         const Tile& tl = tiles[i];
         bool hot = hover == (int)i;

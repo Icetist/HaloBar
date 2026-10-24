@@ -133,7 +133,7 @@ void Bar::OnPolled(LPARAM lp) {
     bool changed = !(r->status == status);
     status = std::move(r->status);
     if (r->bin >= 0 && (r->bin != 0) != binFull) binFull = r->bin != 0, changed = true;
-    if (changed) Redraw();
+    if (changed) SyncFit(), Redraw(); // the battery widget's words may have changed length
 }
 
 void Bar::SyncLang() {
@@ -503,8 +503,7 @@ void Bar::QuickList(const Theme& t, const D2D1_RECT_F& r) {
                 float tw = TextW(dots.empty() ? L" " : dots, Weight::Medium, 13);
                 if (dots.empty()) c.Text(L"Password", Rect(f.left + 14, f.top, Width(f) - 20, Height(f)), Weight::Light, 12.5f, t.textLow);
                 else c.Text(dots, Rect(f.left + 14, f.top, Width(f) - 20, Height(f)), Weight::Medium, 13, t.text);
-                if (std::fmod(ui.Now(), 1.0) < 0.55) c.Fill(Rect(f.left + 14 + (dots.empty() ? 0 : tw) + 1, f.top + 9, 1.5f, Height(f) - 18), 0.75f, t.accentHi); // caret
-                ui.KeepAlive();
+                if (Caret()) c.Fill(Rect(f.left + 14 + (dots.empty() ? 0 : tw) + 1, f.top + 9, 1.5f, Height(f) - 18), 0.75f, t.accentHi); // caret
                 D2D1_RECT_F go = Rect(f.right + 8, f.top, 66, Height(f));
                 Ui::Hit gh = ui.Button(Ui::Id("qs.join"), go);
                 c.Fill(go, Height(go) / 2, pass.size() >= 8 ? t.accent : t.text.Alpha(0.08f)); // wpa keys are 8 characters at least
@@ -585,7 +584,9 @@ void Bar::LoadNotifs() {
     HWND to = hwnd;
     std::thread([to] { // the first read asks the shell for app names: far too slow for the ui thread
         HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        auto* got = new std::vector<sys::Notif>(sys::ReadNotifs(40));
+        bool ok = false;
+        std::vector<sys::Notif> read = sys::ReadNotifs(40, &ok);
+        auto* got = ok ? new std::vector<sys::Notif>(std::move(read)) : nullptr; // windows busy writing its store: no answer, the list shown stays as it was
         if (SUCCEEDED(co)) CoUninitialize();
         if (!PostMessageW(to, WM_APP_NOTIFS, 0, (LPARAM)got)) delete got; // the bar went away meanwhile
     }).detach();

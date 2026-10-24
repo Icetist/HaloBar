@@ -14,11 +14,14 @@ namespace {
 
 namespace WR = winrt::Windows::Devices::Radios;
 
+constexpr ULONGLONG kRecheckMs = 10000;
+
 void Log(const wchar_t* what) { OutputDebugStringW((std::wstring(L"[radios] ") + what + L"\n").c_str()); } // debugger only, nothing on disk
 
 struct RadioState {
     std::atomic<HWND> notify{nullptr}; // the bar's window, told on every flip
     std::atomic<UINT> msg{0};
+    std::atomic<ULONGLONG> lookedAt{0}; // tick of the last search, so a desktop without wi-fi isn't searched on every open
     std::atomic<bool> closed{false}, started{false}; // closed outlives the bar's Radios: late callbacks check it
     std::atomic<bool> hasWifi{false}, hasBt{false}, wifiOn{false}, btOn{false}; // atomics so getters skip the lock
 
@@ -46,6 +49,7 @@ void OnRadio(const std::weak_ptr<RadioState>& w, const WR::Radio& sender) noexce
 }
 
 winrt::fire_and_forget StartRadios(RadioP s) {
+    s->lookedAt.store(GetTickCount64());
     try {
         co_await winrt::resume_background(); // off the ui thread before any blocking winrt call
         const auto access = co_await WR::Radio::RequestAccessAsync(); // needed for SetStateAsync
@@ -144,6 +148,16 @@ void Radios::Start(HWND notify, UINT msg) {
         StartRadios(s); // returns at its first await; states arrive later by message
     } catch (...) {
         Log(L"Start failed");
+    }
+}
+
+void Radios::Recheck() {
+    if (!impl || !impl->s || !impl->s->started.load() || (HasWifi() && HasBt())) return;
+    if (GetTickCount64() - impl->s->lookedAt.load() < kRecheckMs) return;
+    try {
+        StartRadios(impl->s); // found radios replace the old ones under the lock; their revokers unhook as they go
+    } catch (...) {
+        Log(L"Recheck failed");
     }
 }
 

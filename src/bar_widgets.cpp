@@ -59,6 +59,8 @@ const wg::Meta kMeta[] = { // in Bar::Wg order
     {L"Photo", L"A picture from your Pictures folder", wg::kCatMedia, glyph::SysPhoto, 7, 1},
     {L"Divider", L"A line between widgets, as many as you like", wg::kCatTools, glyph::Drag, 1, 0},
     {L"Apps", L"Your pinned and open apps", wg::kCatTools, glyph::Apps, 1, 0}, // always there, never offered: it only moves
+    {L"Drives", L"Your drives, their free space, eject", wg::kCatSystem, glyph::SysDrive, 1, 0},
+    {L"Space", L"Empty room between widgets, any width", wg::kCatTools, glyph::More, 1, 0},
 };
 static_assert(sizeof(kMeta) / sizeof(kMeta[0]) == wg::kKinds, "a catalogue entry per widget");
 
@@ -237,6 +239,8 @@ bool Bar::HasWg(int w) const {
     return false;
 }
 
+constexpr float kGrip = 5; // half the space widget's edge handle, either side of its edge
+
 void Bar::LoadSlots() {
     wgSlots.clear();
     std::wstring s = sys::ReadText(L"WidgetLayout"); // "kind:size,kind:size": the dock's order
@@ -244,7 +248,8 @@ void Bar::LoadSlots() {
         size_t e = s.find(L',', i);
         std::wstring part = s.substr(i, e == std::wstring::npos ? std::wstring::npos : e - i);
         int k = -1, z = 1;
-        if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgCount && k != kWgRetired && (k == kWgDivider || !HasWg(k))) wgSlots.push_back({k, (std::clamp)(z, 0, 2)});
+        if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgCount && k != kWgRetired && (Many(k) || !HasWg(k)))
+            wgSlots.push_back({k, k == kWgSpace ? (std::clamp)(z, (int)kSpaceMin, (int)kSpaceMax) : (std::clamp)(z, 0, 2)}); // a space keeps its width
         if (e == std::wstring::npos) break;
         i = e + 1;
     }
@@ -274,6 +279,8 @@ void Bar::SaveSlots() {
 }
 
 void Bar::SyncWidgets() {
+    std::fill(std::begin(fitW), std::end(fitW), 0.0f); // a widget added or resized: measured afresh
+    SyncFit();
     bool clip = HasWg(kWgClip);
     if (clip != clipListening) {
         clipListening = clip;
@@ -317,6 +324,7 @@ void Bar::SyncWidgets() {
     if (HasWg(kWgPhoto) && !photoSrc) PickPhoto();
     if (!HasWg(kWgPhoto)) photoSrc.Reset(), photoBmp.Reset(); // gone: its pixels go too
     if (HasWg(kWgFiles) && files.empty()) LoadFiles(L""); // the newest download, for the medium and large faces
+    if (HasWg(kWgDrives) && drives.empty()) LoadDrives(); // the count on its face
 }
 
 void Bar::WidgetTick() { // every 2 s, only while the dock or a panel shows: unseen numbers aren't read
@@ -347,6 +355,7 @@ void Bar::WidgetTick() { // every 2 s, only while the dock or a panel shows: uns
             netIn = in, netOut = out, netAt = now;
         }
     }
+    SyncFit();
     if (moved || (wgOpen && wgKind == kWgStats)) Redraw();
 }
 
@@ -533,6 +542,7 @@ void Bar::OpenWidget(int w, float x) {
     if (wgOpen && wgKind == w) return SetPanel(Panel::None); // asked again: it closes
     static const KNOWNFOLDERID* const kFolders[] = {&FOLDERID_Documents, &FOLDERID_Desktop, &FOLDERID_Pictures, &FOLDERID_Music, &FOLDERID_Videos};
     if (w == kWgFiles) LoadFiles(L"");
+    if (w == kWgDrives) LoadDrives(); // fresh as it opens
     if (w == kWgFolder) {
         PWSTR dir = nullptr;
         if (SUCCEEDED(SHGetKnownFolderPath(*kFolders[folderPick], 0, nullptr, &dir))) LoadFiles(dir);
@@ -557,11 +567,10 @@ void Bar::StartEdit() {
 
 // ---- the group in the dock ----
 
-void Bar::DrawWidgets(const Theme& t, float x, float top) {
+void Bar::DrawWidgets(const Theme& t, float x, float top) { // x: where along the dock they start; top: across it
     Canvas& c = ui.C();
-    auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) { // the widget's name, on a small pill above it
-        float tw = (std::min)(TextW(name, Weight::Medium, 12) + 20, 300.0f), cx = (over.left + over.right) / 2;
-        D2D1_RECT_F r = Rect(cx - tw / 2, wegR.top - 32, tw, 24);
+    auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) { // the widget's name, on a small pill beside it
+        D2D1_RECT_F r = TipRect(over, (std::min)(TextW(name, Weight::Medium, 12) + 20, 300.0f));
         c.Fill(r, 12, t.bg.Alpha(1).Mix(t.text, 0.08f));
         c.StrokeV(r, 12, t.hairTop, t.hairBot, 1);
         c.Text(name, Inset(r, 10, 0), Weight::Medium, 12, t.text, Align::Center);
@@ -574,7 +583,7 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
         for (int i = 0; i < (int)wgSlots.size(); ++i) {
             if (i == dragSlot) continue;
             float w = WidgetW(wgSlots[i].kind, wgSlots[i].size);
-            if (input.mouse.x > cx + w / 2) drop = i < dragSlot ? i + 1 : i;
+            if (Along(input.mouse) > cx + w / 2) drop = i < dragSlot ? i + 1 : i;
             cx += w + kWegGap;
         }
         drop = (std::clamp)(drop, 0, (int)wgSlots.size() - 1);
@@ -585,14 +594,16 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
     if (drop >= 0) order.insert(order.begin() + drop, dragSlot);
     int removeAt = -1, pressAt = -1;
     std::vector<int> nth(wgSlots.size()); // dividers come many to a dock: each its own id, by which one it is
-    for (int i = 0, d = 0; i < (int)wgSlots.size(); ++i) nth[(size_t)i] = wgSlots[(size_t)i].kind == kWgDivider ? 1000 * ++d : 0;
+    for (int i = 0, d = 0; i < (int)wgSlots.size(); ++i) nth[(size_t)i] = Many(wgSlots[(size_t)i].kind) ? 1000 * ++d : 0;
     for (int i : order) {
         const WgSlot s = wgSlots[i];
         float w = WidgetW(s.kind, s.size);
+        if (w <= 0 && s.kind == kWgMedia) continue; // the song switched off in settings: not drawn, no room kept
+        int z = Vert() || s.kind == kWgSpace ? 0 : s.size; // a column holds every widget at its small face; a space's size is its width
         uint32_t id = Ui::Id("wg.slot", s.kind + nth[(size_t)i]);
         float sx = ui.Smooth(id + 5, x, 22); // the others slide when one moves
-        if (editing && i == dragSlot) sx = input.mouse.x - wgGrab; // the held one rides the mouse
-        D2D1_RECT_F r = Rect(sx, top, w, kIcon);
+        if (editing && i == dragSlot) sx = Along(input.mouse) - wgGrab; // the held one rides the mouse
+        D2D1_RECT_F r = Spot(sx, w, top);
         x += w + kWegGap;
         bool open = wgOpen && wgKind == s.kind;
         if (editing) {
@@ -600,10 +611,26 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
             D2D1_POINT_2F bx = {r.left + 2, r.top + 2}; // remove, at its corner
             D2D1_RECT_F xb = Rect(bx.x - kXSize / 2, bx.y - kXSize / 2, kXSize, kXSize);
             Ui::Hit xh = fixed ? Ui::Hit{} : ui.Button(Ui::Id("wg.x", s.kind + nth[(size_t)i]), xb); // before the tile's: the first button under a press takes it
+            if (s.kind == kWgSpace && dragSlot < 0) { // its far edge: grab and pull to make the room wider or narrower
+                D2D1_RECT_F eg = Vert() ? Rect(r.left, r.bottom - kGrip, Width(r), kGrip * 2) : Rect(r.right - kGrip, r.top, kGrip * 2, Height(r));
+                uint32_t gid = Ui::Id("wg.grip", s.kind + nth[(size_t)i]);
+                Ui::Hit gh = ui.Button(gid, eg);
+                if (ui.IsActive(gid) && input.pressed) spaceFrom = (int)w; // as it shows: maybe already cut for the apps
+                if (ui.IsActive(gid) && input.down) {
+                    int most = (std::clamp)((int)(w + spaceSlack), (int)kSpaceMin, (int)kSpaceMax); // never so wide an app goes to the "+N" tile
+                    int want = (std::clamp)(spaceFrom + (int)std::lround(Along(input.mouse) - Along(input.pressPos)), (int)kSpaceMin, most);
+                    if (want != wgSlots[i].size) wgSlots[i].size = want, Redraw();
+                }
+                if (gh.clicked || (ui.IsActive(gid) && input.released)) SaveSlots(); // kept as it's let go
+                float gm = Vert() ? (eg.top + eg.bottom) / 2 : (eg.left + eg.right) / 2;
+                Color ink = gh.hover || ui.IsActive(gid) ? t.accent : t.text.Alpha(0.35f);
+                if (Vert()) c.Fill(Rect((r.left + r.right) / 2 - 8, gm - 1.5f, 16, 3), 1.5f, ink);
+                else c.Fill(Rect(gm - 1.5f, (r.top + r.bottom) / 2 - 8, 3, 16), 1.5f, ink); // a small bar on the edge says it pulls
+            }
             Ui::Hit h = ui.Button(id, r);
             DrawTile(t, r, 0.6f, 1);
             if (fixed) DrawApps(t, r, false);
-            else DrawWg(t, s.kind, s.size, r, false);
+            else DrawWg(t, s.kind, z, r, false);
             bool sel = wgSel == i;
             c.Stroke(Inset(r, -1, -1), TileRadius() + 1, t.accent.Alpha(sel ? 0.95f : 0.35f), sel ? 2.0f : 1.2f);
             if (!fixed) {
@@ -611,8 +638,8 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
                 c.Icon(glyph::Close, bx, 11, Color{1, 1, 1, 1});
             }
             if (xh.clicked) removeAt = i;
-            else if (ui.IsActive(id) && input.pressed && !xh.hover) pressAt = i, wgGrab = input.mouse.x - r.left;
-            if (ui.IsActive(id) && input.down && dragSlot < 0 && std::fabs(input.mouse.x - input.pressPos.x) > kDragStart) dragSlot = i;
+            else if (ui.IsActive(id) && input.pressed && !xh.hover) pressAt = i, wgGrab = Along(input.mouse) - (Vert() ? r.top : r.left);
+            if (ui.IsActive(id) && input.down && dragSlot < 0 && std::fabs(Along(input.mouse) - Along(input.pressPos)) > kDragStart) dragSlot = i;
             if (h.clicked && dragSlot < 0) wgSel = i, galleryScroll = 0; // picked: its size and options show in the gallery
             if (h.hover && dragSlot < 0) tip(r, wg::Info(s.kind).name);
             continue;
@@ -621,19 +648,20 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
             DrawApps(t, r, true);
             continue;
         }
+        if (s.kind == kWgSpace) continue; // just room: nothing drawn, nothing to hover or click
         if (s.kind == kWgDivider) { // just its hairline: nothing to hover or click
-            DrawWg(t, s.kind, s.size, r, true);
+            DrawWg(t, s.kind, z, r, true);
             continue;
         }
         if (s.kind == kWgMedia) { // the song has its own buttons and tip
-            DrawWg(t, s.kind, s.size, r, true);
+            DrawWg(t, s.kind, z, r, true);
             continue;
         }
         DrawTile(t, r, ui.Smooth(id + 1, Inside(r, input.mouse) || open ? 1.0f : 0, 18), 1);
-        DrawWg(t, s.kind, s.size, r, true); // its own buttons first, toggles and mute: the first button under a press takes it
+        DrawWg(t, s.kind, z, r, true); // its own buttons first, toggles and mute: the first button under a press takes it
         Ui::Hit h = ui.Button(id, r);
         bool right = input.rclick && Inside(r, input.mouse);
-        if (h.clicked || right) WgClick(s.kind, right, (r.left + r.right) / 2);
+        if (h.clicked || right) WgClick(s.kind, right, Mid(r));
         if (h.hover && !open) tip(r, WgTip(s.kind));
     }
     if (editing && dragSlot >= 0 && input.released) { // dropped: the order is kept
@@ -653,11 +681,51 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) {
         SaveSlots();
     }
     if (editing) { // the gallery's handle in the dock: more widgets
-        D2D1_RECT_F r = Rect(x, top, kIcon, kIcon);
+        D2D1_RECT_F r = Spot(x, kIcon, top);
         Ui::Hit h = ui.Button(Ui::Id("wg.add"), r);
         c.Stroke(Inset(r, 3, 3), TileRadius(), t.accent.Alpha(h.hover ? 0.9f : 0.5f), 1.4f);
         c.Icon(glyph::Add, {(r.left + r.right) / 2, (r.top + r.bottom) / 2}, 20, t.accentHi);
         if (h.clicked) wgSel = -1, galleryScroll = 0;
         if (h.hover) tip(r, L"Add widgets");
+    }
+}
+
+void Bar::LoadDrives() { // letters, labels and space: a few cheap calls, made only when asked
+    drives.clear();
+    DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (!(mask & (1u << i))) continue;
+        wchar_t root[] = {(wchar_t)(L'A' + i), L':', L'\\', 0};
+        UINT type = GetDriveTypeW(root);
+        if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE && type != DRIVE_REMOTE && type != DRIVE_CDROM) continue;
+        DriveRow d;
+        d.letter = root[0];
+        d.removable = type == DRIVE_REMOVABLE || type == DRIVE_CDROM;
+        wchar_t label[MAX_PATH] = {};
+        UINT was = SetErrorMode(SEM_FAILCRITICALERRORS); // an empty card reader stays quiet
+        GetVolumeInformationW(root, label, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0);
+        ULARGE_INTEGER freeBytes{}, total{};
+        bool ready = GetDiskFreeSpaceExW(root, &freeBytes, &total, nullptr) != FALSE;
+        SetErrorMode(was);
+        if (!ready && type == DRIVE_CDROM) continue; // no disc in it
+        d.label = label[0] ? label : (type == DRIVE_REMOTE ? L"Network drive" : d.removable ? L"Removable drive" : L"Local disk");
+        d.total = total.QuadPart, d.free = freeBytes.QuadPart;
+        drives.push_back(d);
+    }
+}
+
+void Bar::Eject(wchar_t letter) {
+    wchar_t root[] = {letter, L':', L'\\', 0};
+    ComPtr<IShellItem> item;
+    ComPtr<IContextMenu> menu;
+    if (FAILED(SHCreateItemFromParsingName(root, nullptr, IID_PPV_ARGS(&item))) || FAILED(item->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&menu)))) return;
+    if (HMENU m = CreatePopupMenu()) {
+        if (SUCCEEDED(menu->QueryContextMenu(m, 0, 1, 0x7FFF, CMF_NORMAL))) { // the verb only exists once the menu is built
+            CMINVOKECOMMANDINFO ci = {sizeof(ci)};
+            ci.lpVerb = "eject";
+            ci.nShow = SW_SHOWNORMAL;
+            menu->InvokeCommand(&ci);
+        }
+        DestroyMenu(m);
     }
 }

@@ -24,7 +24,7 @@ public:
     Preview& operator=(const Preview&) = delete;
 
     enum Media { kHasMedia = 1, kPlaying = 2, kCanPrev = 4, kCanNext = 8 }; // the hovered app is what's playing: transport buttons under its windows
-    void Show(HWND owner, const std::wstring& key, const std::vector<Win>& wins, POINT anchor, float scale, const Theme& t, int media = 0); // anchor: bottom centre, screen px
+    void Show(HWND owner, const std::wstring& key, const std::wstring& name, const std::vector<Win>& wins, POINT anchor, float scale, const Theme& t, int media = 0, int side = 0); // anchor: bottom centre, screen px; side 1: anchor is the left middle, 2 the right middle
     void Hide();
     bool Shown() const { return hwnd != nullptr; }
     bool Hovered() const { return hover >= -1 && inside; } // the mouse is on the card
@@ -52,11 +52,12 @@ private:
         HTHUMBNAIL thumb = nullptr;
     };
     HWND hwnd = nullptr, owner = nullptr;
-    std::wstring key;
+    std::wstring key, name; // name: the app's, over its windows
     std::vector<Tile> tiles;
     Theme t;
     float scale = 1, W = 0, H = 0;
     POINT anchor{};
+    int side = 0; // 0 above the anchor, 1 to its right, 2 to its left
     int hover = -2; // tile under the mouse, -1 the card itself, -2 nowhere
     int media = 0, hoverMedia = -1;
     bool hoverClose = false, inside = false, tracking = false;

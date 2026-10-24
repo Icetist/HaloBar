@@ -1,5 +1,6 @@
 #include "prefs.h"
 
+#include <algorithm>
 #include <string>
 
 namespace prefs {
@@ -52,6 +53,8 @@ bool IslandInstalled() {
 Look IslandLook() {
     Look l;
     l.look = Read(kIslandKey, L"Appearance", 0);
+    l.followsBar = l.look == 4;
+    if (!l.followsBar) l.bgOpacity = (std::clamp)(Read(kIslandKey, L"BgOpacity", 100), Settings::kMinOpacity, 100); // clamped as island clamps it; 4 follows the bar back: the default ends the loop
     if (l.look < 0 || l.look > 3) l.look = 0; // a look this build doesn't know: the default one
     l.accentFixed = Read(kIslandKey, L"AccentMode", 0) == 1;
     l.accentHex = Read(kIslandKey, L"AccentHex", l.accentHex) & 0xFFFFFF; // rgb only, any stray alpha byte dropped
@@ -76,6 +79,7 @@ Settings Load() {
     };
     s.look = num(L"Look", s.look, -1, 3); // -1 follows island
     s.blur = num(L"GlassBlur", s.blur, 0, 100);
+    s.opacity = num(L"Opacity", s.opacity, Settings::kMinOpacity, 100);
     s.accent = num(L"Accent", s.accent, -1, 1);
     s.accentHex = Read(kBarKey, L"AccentHex", s.accentHex) & 0xFFFFFF;
     s.customBg = Read(kBarKey, L"CustomBg", s.customBg) & 0xFFFFFF;
@@ -92,6 +96,12 @@ Settings Load() {
     s.pills = num(L"Pills", s.pills, 0, 1);
     s.song = num(L"Song", s.song, 0, 1);
     s.screens = num(L"Screens", s.screens, 0, 1);
+    s.align = num(L"Align", s.align, 0, 2);
+    s.edge = num(L"Edge", s.edge, 0, 2);
+    s.winKeys = num(L"WinKeys", s.winKeys, 0, 1);
+    s.adaptive = num(L"Adaptive", s.adaptive, 0, 1);
+    s.trayApps = num(L"TrayApps", s.trayApps, 0, 1);
+    s.startIcon = num(L"StartIcon", s.startIcon, 0, 1); // the old sparkle face reads as halobar's
     s.hoverPlay = num(L"HoverPlay", s.hoverPlay, 0, 1);
     s.date = num(L"Date", s.date, 0, 1);
     s.clock24 = num(L"Clock24", s.clock24, -1, 1); // -1 follows the windows region format

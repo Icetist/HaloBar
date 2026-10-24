@@ -11,6 +11,7 @@ struct AppEntry {
     std::wstring parse;  // what to hand ShellExecuteEx, "shell:AppsFolder\<id>"
     std::wstring id;     // AppsFolder item id: aumid for packaged, path or known-folder id for desktop
     std::wstring lower;  // name lowercased once, so matching never allocates
+    std::wstring folder; // the start menu folder it sits in, as start's all apps groups it; empty at the top level
 };
 
 std::vector<AppEntry> ListApps();  // blocking, worker-thread safe; sorted by name, deduped by id
