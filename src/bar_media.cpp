@@ -51,14 +51,17 @@ void WaveLine(Canvas& c, float a0, float a1, float cy, float amp, double now, Co
 
 void Bar::OnMedia() {
     sys::Track t;
-    bool has = media.Snapshot(t);
+    bool has = Player().Snapshot(t);
     bool started = has && t.playing && !(hasTrack && track.playing);
     track = std::move(t);
     hasTrack = has;
-    if (started) meter.Refresh(); // follow whichever output it's playing on now
+    if (started) Peaks().Refresh(); // follow whichever output it's playing on now
     if (!hasTrack && mediaOpen) SetMediaOpen(false);
     if (card.Shown()) ShowPreview(); // a card with the transport on it shows play or pause as it is now
     Redraw();
+    if (!lead)
+        for (Bar* b : Docks())
+            if (b != this) b->OnMedia(); // one session watcher: every screen's dock shows its song
 }
 
 void Bar::SyncCover() {
@@ -85,10 +88,10 @@ void Bar::SyncCover() {
 bool Bar::StepBars(float dt, double now) {
     bool playing = hasTrack && track.playing;
     float l = 0, r = 0;
-    if (playing && !meter.Read(l, r)) meter.Refresh(); // the output changed under us: listen to the new one
+    if (playing && !Peaks().Read(l, r)) Peaks().Refresh(); // the output changed under us: listen to the new one
     if (!playing || l + r > 0.0001f) quietSince = -1;
     else if (quietSince < 0) quietSince = now;
-    else if (now - quietSince > kQuietRebindSec) meter.Refresh(), quietSince = now; // the old output still answers, with silence: headphones came along mid-song
+    else if (now - quietSince > kQuietRebindSec) Peaks().Refresh(), quietSince = now; // the old output still answers, with silence: headphones came along mid-song
     float level = std::sqrt((l + r) / 2); // sqrt lifts quiet passages so the bars stay alive
     bool moving = false;
     for (int i = 0; i < 4; ++i) {
@@ -123,7 +126,7 @@ void Bar::Wave(const D2D1_RECT_F& r, const Theme& t) {
     float v = !known ? 1.0f : preview >= 0 ? preview : (float)track.Progress();
     if (known && track.canSeek && ui.Slider(id, r, v, false)) preview = v; // preview seek while dragging
     if (ui.IsActive(id) && ui.In().released) { // commit seek on release only
-        media.Seek(v);
+        Player().Seek(v);
         preview = -1;
     }
     if (!ui.IsActive(id)) preview = -1;
@@ -246,14 +249,14 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
 
     float cy = y0 + 126, cx = x + ww / 2;
     const Theme ct = theme::Lift(t); // the play button leans toward the ink, so it stands clear of the glow behind it
-    if (w::IconBtn(ui, ct, Ui::Id("mp.prev"), {cx - 58, cy}, 40, glyph::Prev, 26, track.canPrev)) media.Previous();
-    if (w::PlayBtn(ui, ct, Ui::Id("mp.play"), {cx, cy}, 48, track.playing, hasTrack)) media.TogglePlay();
-    if (w::IconBtn(ui, ct, Ui::Id("mp.next"), {cx + 58, cy}, 40, glyph::Next, 26, track.canNext)) media.Next();
+    if (w::IconBtn(ui, ct, Ui::Id("mp.prev"), {cx - 58, cy}, 40, glyph::Prev, 26, track.canPrev)) Player().Previous();
+    if (w::PlayBtn(ui, ct, Ui::Id("mp.play"), {cx, cy}, 48, track.playing, hasTrack)) Player().TogglePlay();
+    if (w::IconBtn(ui, ct, Ui::Id("mp.next"), {cx + 58, cy}, 40, glyph::Next, 26, track.canNext)) Player().Next();
     Theme lit = t; // shuffle and repeat light up in the song's own accent, not the lifted one the transport uses
     lit.accent = t.accentHi;
-    if (w::IconBtn(ui, lit, Ui::Id("mp.shuf"), {cx - 108, cy}, 34, glyph::Shuffle, 19, track.canShuf, track.shuffle)) media.ToggleShuffle();
+    if (w::IconBtn(ui, lit, Ui::Id("mp.shuf"), {cx - 108, cy}, 34, glyph::Shuffle, 19, track.canShuf, track.shuffle)) Player().ToggleShuffle();
     if (w::IconBtn(ui, lit, Ui::Id("mp.rep"), {cx + 108, cy}, 34, track.repeat == 1 ? glyph::RepeatOne : glyph::Repeat, 19, track.canRep, track.repeat != 0))
-        media.CycleRepeat();
+        Player().CycleRepeat();
     if (track.shuffle) c.Dot({cx - 108, cy + 15}, 2.2f, t.accentHi); // on, as island marks it
     if (track.repeat) c.Dot({cx + 108, cy + 15}, 2.2f, t.accentHi);
     rt->PopLayer();

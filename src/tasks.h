@@ -33,8 +33,10 @@ struct Badge { // what an app told the taskbar about one of its windows through 
 // The pinned apps come first, in the windows taskbar's own order, whether they run or not.
 class Tasks {
 public:
-    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle, kOverflow, kIsland }; // wparam of the posted message; ktitle: only the front window's title moved; koverflow: windows' tray flyout opened or closed; kisland: astraeus island's window appeared
-    Tasks(HWND notify, UINT msg);
+    enum : WPARAM { kChanged, kRescan, kTrayShown, kTitle, kOverflow, kIsland, kBadge }; // wparam of the posted message; ktitle: only the front window's title moved; koverflow: windows' tray flyout opened or closed; kisland: astraeus island's window appeared; kbadge: a progress or overlay changed, nothing else
+    Tasks(HWND notify, UINT msg); // notify: the main dock, which walks the windows when told to
+    void Listen(HWND h); // another screen's dock hears every change too
+    void Unlisten(HWND h);
     ~Tasks();
     Tasks(const Tasks&) = delete;
     Tasks& operator=(const Tasks&) = delete;
@@ -66,12 +68,13 @@ private:
     static void CALLBACK OnEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD);
     void Event(DWORD ev, HWND h);
     TaskWin* Find(HWND h);
-    void Ping(WPARAM what) const { PostMessageW(notify, msg, what, 0); }
+    void Ping(WPARAM what) const; // to every dock that listens, or the main one alone for its own jobs
     void Describe(HWND h, TaskApp& out); // key, exe, app id and name of a new window's app
     void Merge(std::vector<TaskApp> running); // pins first, then the rest, into apps
     void SavePins(); // written for the windows taskbar, which reads them once it's back
 
     HWND notify;
+    std::vector<HWND> others; // the moons' windows
     UINT msg, shellMsg = 0;
     std::vector<void*> hooks;
     std::vector<TaskApp> apps;

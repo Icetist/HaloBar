@@ -97,6 +97,9 @@ void Bar::PollStatus() { // the slow timer: anything the bars show that windows 
         if (notifStamp && !calOpen) notifUnread = changed = true; // the first read only sets the baseline
         if (notifStamp) LoadNotifs(); // read it off the ui thread: the icons' counts follow
         notifStamp = s;
+        if (!lead)
+            for (Bar* b : Docks())
+                if (b != this) b->FollowNotifs();
     }
     if (changed || lang != was) Redraw();
 }
@@ -130,9 +133,15 @@ void Bar::StopPoller() {
 
 void Bar::OnPolled(LPARAM lp) {
     std::unique_ptr<Polled> r(reinterpret_cast<Polled*>(lp));
-    bool changed = !(r->status == status);
-    status = std::move(r->status);
-    if (r->bin >= 0 && (r->bin != 0) != binFull) binFull = r->bin != 0, changed = true;
+    TakeStatus(r->status, r->bin);
+    for (Bar* b : Docks())
+        if (b != this) b->TakeStatus(r->status, r->bin); // one read for every screen's dock
+}
+
+void Bar::TakeStatus(const sys::Status& s, int bin) {
+    bool changed = !(s == status);
+    status = s;
+    if (bin >= 0 && (bin != 0) != binFull) binFull = bin != 0, changed = true;
     if (changed) SyncFit(), Redraw(); // the battery widget's words may have changed length
 }
 
@@ -531,7 +540,7 @@ void Bar::QuickList(const Theme& t, const D2D1_RECT_F& r) {
             if (row(i, o.headphones ? glyph::Headphones : glyph::Speaker, o.name, L"", on) && !on && sys::SetOut(o.id)) {
                 outId = o.id;
                 if (spk) spk->Refresh(); // the volume slider now talks to the new device
-                meter.Refresh(); // and the visualizer listens to it
+                Peaks().Refresh(); // and the visualizer listens to it
             }
         }
         y = MixRows(t, r, y, MixFit()); // and every app's own level, island's mixer

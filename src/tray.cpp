@@ -8,6 +8,8 @@
 #include "prefs.h"
 #include "taskbar.h"
 
+void Census(UINT what, WPARAM sub, int add = 1); // bar.cpp: DebugLog's tally of what wakes the ui thread
+
 namespace {
 
 constexpr DWORD kTraySig = 0x34753423; // what Shell_NotifyIcon stamps its messages with
@@ -293,6 +295,7 @@ void TrayHost::Prune() {
 LRESULT CALLBACK TrayHost::Proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     if (m == WM_NCCREATE) SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW*)lp)->lpCreateParams); // the TrayHost passed to CreateWindowExW
     auto* self = (TrayHost*)GetWindowLongPtrW(h, GWLP_USERDATA);
+    Census(m | 0x10000, wp ? 1 : 0); // the tray's own messages, told apart from the dock's
     if (self && m == WM_COPYDATA && lp) return self->OnCopy((HWND)wp, (const COPYDATASTRUCT*)lp);
     return DefWindowProcW(h, m, wp, lp);
 }
@@ -396,7 +399,8 @@ LRESULT TrayHost::Notify(const void* data, DWORD size) {
         return byGuid ? it.hasGuid && IsEqualGUID(it.guid, n.guidItem) : !it.hasGuid && it.owner == owner && it.id == n.uID;
     });
 
-    auto apply = [&](TrayItem& it) {
+    auto apply = [&](TrayItem& it) { // true when something the dock shows or asks about changed
+        bool moved = owner && owner != it.owner;
         it.owner = owner ? owner : it.owner; // a guid icon may move to a new window
         it.id = n.uID;
         if (n.uFlags & NIF_MESSAGE) it.callback = n.uCallbackMessage;
@@ -407,16 +411,21 @@ LRESULT TrayHost::Notify(const void* data, DWORD size) {
                 it.icon = copy;
                 it.from = n.hIcon;
                 ++it.ver; // the row remakes its bitmap
+                moved = true;
             }
         }
-        if (n.uFlags & NIF_TIP) it.tip.assign(n.szTip, wcsnlen(n.szTip, cb <= kV1Size ? 64 : 128)); // bounded: the tip may not be terminated
-        if ((n.uFlags & NIF_STATE) && (n.dwStateMask & NIS_HIDDEN)) it.hidden = (n.dwState & NIS_HIDDEN) != 0;
+        if (n.uFlags & NIF_TIP) {
+            size_t len = wcsnlen(n.szTip, cb <= kV1Size ? 64 : 128); // bounded: the tip may not be terminated
+            if (it.tip.size() != len || it.tip.compare(0, len, n.szTip, len) != 0) it.tip.assign(n.szTip, len), moved = true;
+        }
+        if ((n.uFlags & NIF_STATE) && (n.dwStateMask & NIS_HIDDEN) && it.hidden != ((n.dwState & NIS_HIDDEN) != 0)) it.hidden = !it.hidden, moved = true;
+        return moved;
     };
 
     switch (d.msg) {
     case NIM_MODIFY:
         if (found != items.end()) {
-            apply(*found);
+            if (!apply(*found)) return TRUE; // the same icon, tip and state sent again, as many apps do every second: nothing to wake the dock for
             break;
         }
         if (!(n.uFlags & NIF_ICON) || !n.hIcon) return FALSE; // nothing to show yet: apps answer this by adding it

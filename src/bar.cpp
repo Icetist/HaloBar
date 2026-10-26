@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cwctype>
 
 #include "glyphs.h"
@@ -22,18 +23,31 @@
 
 #pragma comment(lib, "shcore.lib")
 
+void Census(UINT what, WPARAM sub, int add = 1);
+
 namespace {
 
 constexpr UINT_PTR kClockTimer = 1, kRescanTimer = 2, kHoverTimer = 3, kCloseTimer = 4, kIdleTimer = 5, kDevTimer = 6, kStatusTimer = 7, kReserveTimer = 8, kClipTimer = 31;
 constexpr float kLogoGrow = 1.6f; // the icon has room around the mark: drawn larger, the mark matches windows' logo
 constexpr UINT kClipSettleMs = 150; // a copy is often several clipboard calls: opening it in between makes the copying app's last one fail
-std::vector<Bar*> coverBars; // win event hooks carry no context: each dock is found by its own hook handles
+std::vector<Bar*> coverBars; // every dock, main one first: the shared hooks and reads reach each of them
+HWINEVENTHOOK coverHooks[3] = {}, moveHook = nullptr; // what moves windows: focus, drags, minimizes; and the app in front's own moves. one set for every screen
 Bar* keyBar = nullptr; // the dock the keyboard hook speaks for: the main one
 constexpr UINT kReserveSettleMs = 700; // explorer's taskbar takes a moment to really give up its strip once it auto-hides
 constexpr UINT kStatusMs = 10000; // network, battery and volume in the row: windows doesn't tell us, so a slow look
 constexpr UINT kRescanMs = 40; // a burst of window events lands in one walk of the windows
 constexpr UINT kHoverMs = 260, kCloseMs = 420; // song: rest on it to open the player; leave the island this long to close what's open
 constexpr UINT kSetCloseMs = 1400; // settings forgive a longer trip outside
+constexpr UINT_PTR kHideTimer = 90; // explorer's taskbar came back in a burst: hide it once more after a pause
+constexpr int kHideBurst = 6; // shows in one second before we stop answering each one
+constexpr UINT kHideCalmMs = 1500, kHideCalmMaxMs = 30000; // the pause doubles while explorer keeps at it, up to this
+constexpr int kHideStrikesMax = 5;
+constexpr UINT_PTR kScreensTimer = 91; // a screen came or went: the docks are made again once the screens hold still
+constexpr UINT kScreensSettleMs = 1500; // a flapping cable or a waking dock station sends a burst of changes
+constexpr int kScreensGapSec = 10; // restarts for screens at most this often, whatever the screens do
+constexpr UINT kStatsMs = 2000; // the load and network widgets' tick while in sight
+constexpr UINT kNotifQuickMs = 2000; // the store looked at while a pill could rise
+constexpr UINT kFullMs = 10000; // behind a fullscreen app: a slow look that it's still there, in case the shell's notice goes missing
 constexpr WORD kMaskKey = 0xE8; // unassigned: sent so a win + number never leaves the start menu to open
 constexpr WPARAM kKeyNext = 100, kKeyBack = 101, kKeyTray = 102; // WM_APP_WINKEY past the numbers: win + t, shift + win + t, win + b
 constexpr WPARAM kTrayShowDesktop = 407; // the command explorer's taskbar runs for its show desktop corner
@@ -51,10 +65,9 @@ void Log(const char* what) { // DebugLog set: frame trouble goes to %TEMP%\HaloB
     GetTempPathW(MAX_PATH, tmp);
     HANDLE f = CreateFileW((std::wstring(tmp) + L"HaloBar-log.txt").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
-    char line[256];
-    int n = sprintf_s(line, "%llu %s\r\n", GetTickCount64(), what);
+    std::string line = std::to_string(GetTickCount64()) + " " + what + "\r\n"; // any length: a census line runs long
     DWORD w = 0;
-    WriteFile(f, line, (DWORD)(n > 0 ? n : 0), &w, nullptr);
+    WriteFile(f, line.data(), (DWORD)line.size(), &w, nullptr);
     CloseHandle(f);
 }
 
@@ -65,6 +78,29 @@ double Seconds() {
     return (double)now.QuadPart / (double)freq.QuadPart;
 }
 
+}
+
+void Census(UINT what, WPARAM sub, int add) { // DebugLog set: what wakes the ui thread, tallied and written every 10 s; nothing otherwise
+    constexpr ULONGLONG kCensusMs = 10000;
+    constexpr size_t kCensusMax = 64; // kinds kept apart; the rest share one line
+    static const bool on = prefs::ReadNum(L"DebugLog", 0) != 0;
+    if (!on) return;
+    static std::map<uint64_t, int> seen;
+    static ULONGLONG since = GetTickCount64();
+    uint64_t key = (uint64_t)what << 32 | (what == WM_TIMER || what == WM_APP_TASKS || what >= 0xF0000 ? (uint32_t)sub : 0); // timers and task pings by their id
+    if (seen.size() < kCensusMax || seen.count(key)) seen[key] += add;
+    else seen[~0ull] += add;
+    ULONGLONG now = GetTickCount64();
+    if (now - since < kCensusMs) return;
+    std::string line = "census " + std::to_string((now - since) / 1000) + "s:";
+    for (auto& [k, n] : seen) {
+        char part[48];
+        sprintf_s(part, " %x/%x=%d", (unsigned)(k >> 32), (unsigned)(k & 0xFFFFFFFF), n);
+        line += part;
+    }
+    seen.clear();
+    since = now;
+    Log(line.c_str());
 }
 
 Bar::Bar() {
@@ -95,12 +131,13 @@ Bar::~Bar() {
     if (!moon) Banners(false);
     card.Hide();
     icons.Stop(); // its thread posts to the window: done before the window goes
+    if (tasks && lead) tasks->Unlisten(hwnd); // a moon only lets go: the main dock's list lives on
     tasks.reset(); // unhook before the window goes
     spectrum.reset();
     FreeDev();
     StopPoller(); // it closes the status handles on its own thread
-    prefs::Unwatch(prefsEv);
-    pins::Unwatch(pinsEv);
+    if (prefsEv) prefs::Unwatch(prefsEv); // the watches are the main dock's: a moon has none to close
+    if (pinsEv) pins::Unwatch(pinsEv);
     if (frameWait) CloseHandle(frameWait);
     if (hwnd) DestroyWindow(hwnd);
 }
@@ -125,26 +162,27 @@ bool Bar::Create(HINSTANCE instance) {
     shelf = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, nullptr);
     tbMsg = RegisterWindowMessageW(L"TaskbarCreated");
     icons.Start(hwnd, WM_APP_ICON); // the shell's icons are read off the ui thread: the first frame doesn't wait seconds for them
-    tasks = std::make_unique<Tasks>(hwnd, WM_APP_TASKS);
+    if (lead) tasks = lead->tasks, tasks->Listen(hwnd); // one window list for every screen: the main dock walks it, the moons hear each change
+    else tasks = std::make_shared<Tasks>(hwnd, WM_APP_TASKS);
+    if (!tasks) return false;
     Place();
-    tasks->Rescan();
+    if (!lead) tasks->Rescan();
     coverBars.push_back(this);
     HookCover(true); // always: auto-hide and the glass's tint both follow the windows
     notifStamp = sys::NotifStamp();
     dnd = Quiet(); // the bell shows do not disturb as it already is, from either app, before any panel opens
     LoadNotifs(); // the counts start from what's there now
     wchar_t dir[MAX_PATH];
-    if (ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Notifications", dir, MAX_PATH))
+    if (!lead && ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Windows\\Notifications", dir, MAX_PATH)) // one watch: the main dock tells the moons
         notifWatch = FindFirstChangeNotificationW(dir, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE); // the kernel tells us when a toast lands
     if (Hush()) Banners(true);
     screensAt = GetSystemMetrics(SM_CMONITORS);
-    SetTimer(hwnd, kAppsTimer, 8000, nullptr);
-    SetCoalescableTimer(hwnd, kNotifPollTimer, 2000, nullptr, 500); // windows writes its store lazily and the folder watch can lag: two attribute reads every 2 s catch a new toast fast
+    if (!lead) SetTimer(hwnd, kAppsTimer, 8000, nullptr); // a moon borrows the main dock's list as its launcher opens
+    if (!lead) notifPolling = true, SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500); // windows writes its store lazily and the folder watch can lag: two attribute reads every 2 s catch a new toast fast
     cals.Sync(hwnd, WM_APP_CAL, 0); // and again whenever the calendar opens: nothing fetches while it's closed
     if (!moon) SetTimer(hwnd, kUpdateTimer, kUpdateFirstMs, nullptr); // one updater: the main dock's
-    media.Start(hwnd, WM_APP_MEDIA);
-    prefsEv = prefs::WatchIsland();
-    pinsEv = pins::Watch();
+    if (!lead) media.Start(hwnd, WM_APP_MEDIA); // one session watcher: a moon shows the main dock's song
+    if (!lead) prefsEv = prefs::WatchIsland(), pinsEv = pins::Watch(); // watched once: the main dock passes changes on
     SyncLook();
     SyncUser(); // the toolbar's user module
     SyncDesktops();
@@ -154,7 +192,8 @@ bool Bar::Create(HINSTANCE instance) {
     ArmClock();
     radios.Start(hwnd, WM_APP_RADIOS);
     SyncAudio();
-    StartPoller();
+    if (!lead) StartPoller(); // one poller: its reads reach every dock
+    else status = lead->status, binFull = lead->binFull, wx = lead->wx, OnMedia(); // what the main dock knows so far
     LoadIconPaths(); // the icons picked for apps
     LoadSlots(); // the dock's widgets, in their order and sizes
     SyncWidgets(); // the clipboard listener, the stats timer, the forecast: only for the widgets in the dock
@@ -380,7 +419,7 @@ void Bar::SetFull(bool on) {
     if (on == full) return;
     full = on;
     ShowWindow(hwnd, on ? SW_HIDE : SW_SHOWNOACTIVATE); // games and videos get the whole screen
-    if (on) SetCoalescableTimer(hwnd, kFullTimer, 2000, nullptr, 1000); // the shell's "it's over" can go missing: never stay hidden on its word alone
+    if (on) SetCoalescableTimer(hwnd, kFullTimer, kFullMs, nullptr, 1000); // the shell's "it's over" can go missing: never stay hidden on its word alone; a window event looks sooner
     else KillTimer(hwnd, kFullTimer);
     if (!on) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -480,34 +519,41 @@ void Bar::ShowPreview() {
     else card.Show(hwnd, a->key, a->name, wins, ToScreen({(hoverSlot.left + hoverSlot.right) / 2, wegR.top}), scale, shellNow, med); // over the dock, centered on the app
 }
 
-void Bar::HookCover(bool on) {
+void Bar::HookCover(bool on) { // one set of hooks for every dock: a second screen doesn't double what each window event costs
+    covered = false;
+    if (on && !coverHooks[0]) {
+        constexpr DWORD kFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
+        coverHooks[0] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnCoverEvent, 0, 0, kFlags);
+        coverHooks[1] = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, nullptr, OnCoverEvent, 0, 0, kFlags);
+        coverHooks[2] = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, nullptr, OnCoverEvent, 0, 0, kFlags);
+    }
+    if (on) {
+        OnCoverEvent(nullptr, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), OBJID_WINDOW, CHILDID_SELF, 0, 0);
+        return;
+    }
+    if (std::any_of(coverBars.begin(), coverBars.end(), [this](Bar* b) { return b != this; })) return; // another dock still listens
     for (auto& h : coverHooks)
         if (h) UnhookWinEvent(h), h = nullptr;
     if (moveHook) UnhookWinEvent(moveHook), moveHook = nullptr;
-    covered = false;
-    if (!on) return;
-    constexpr DWORD kFlags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
-    coverHooks[0] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, OnCoverEvent, 0, 0, kFlags);
-    coverHooks[1] = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, nullptr, OnCoverEvent, 0, 0, kFlags);
-    coverHooks[2] = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, nullptr, OnCoverEvent, 0, 0, kFlags);
-    OnCoverEvent(nullptr, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), OBJID_WINDOW, CHILDID_SELF, 0, 0);
 }
 
-void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK hook, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD) {
-    Bar* b = nullptr;
-    for (Bar* x : coverBars)
-        if (!hook || std::find(std::begin(x->coverHooks), std::end(x->coverHooks), hook) != std::end(x->coverHooks) || x->moveHook == hook) b = x;
-    if (!b || !b->hwnd || obj != OBJID_WINDOW || child != CHILDID_SELF) return; // carets, scrollbars and the like move all the time: not windows
+void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD) {
+    Census(0xF0004, ev);
+    static DWORD movePid = 0; // the process the location hook follows
+    if (coverBars.empty() || obj != OBJID_WINDOW || child != CHILDID_SELF) return; // carets, the cursor, scrollbars and the like move all the time: not windows
     if (ev == EVENT_SYSTEM_FOREGROUND && h) { // only the app in front can be dragged or maximized over us: follow its moves alone, not the whole desktop's
         DWORD pid = 0;
         GetWindowThreadProcessId(h, &pid);
-        if (b->moveHook) UnhookWinEvent(b->moveHook);
-        b->moveHook = pid && pid != GetCurrentProcessId()
-                          ? SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr, OnCoverEvent, pid, 0, WINEVENT_OUTOFCONTEXT)
-                          : nullptr;
+        if (pid == GetCurrentProcessId()) pid = 0;
+        if (pid != movePid || !moveHook) { // another window of the same app: the hook already follows it
+            if (moveHook) UnhookWinEvent(moveHook), moveHook = nullptr;
+            movePid = pid;
+            if (pid) moveHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr, OnCoverEvent, pid, 0, WINEVENT_OUTOFCONTEXT);
+        }
     }
     if (ev == EVENT_OBJECT_LOCATIONCHANGE && GetAncestor(h, GA_ROOT) != h) return;
-    SetTimer(b->hwnd, kCoverTimer, kCoverMs, nullptr); // a burst of moves, one check
+    for (Bar* b : coverBars)
+        if (b->hwnd) SetTimer(b->hwnd, kCoverTimer, kCoverMs, nullptr); // a burst of moves, one check per dock
 }
 
 void Bar::CheckCovered() {
@@ -1002,6 +1048,24 @@ bool Bar::StepTheme(float dt) {
     return moving;
 }
 
+const std::vector<Bar*>& Bar::Docks() { return coverBars; }
+
+bool Bar::ScreensMoved() const { return GetSystemMetrics(SM_CMONITORS) != screensAt || (moon && !SameScreen()); }
+
+void Bar::RefreshWx() {
+    Bar* src = lead ? lead : this; // its answer reaches every dock
+    src->weather.Refresh(src->hwnd, WM_APP_WX);
+}
+
+void Bar::FollowNotifs() {
+    int64_t s = sys::NotifStamp();
+    if (s != notifStamp && notifStamp && !calOpen) notifUnread = true;
+    notifStamp = s;
+    LoadNotifs();
+}
+
+bool Bar::PillsLive() const { return !lead && cfg.pills && !full && !Quiet() && !FindWindowW(L"AstraeusHost", nullptr); } // astraeus running: it shows the notification, not us
+
 void Bar::OnPins() {
     pins::Rearm(pinsEv);
     if (!tasks) return;
@@ -1010,7 +1074,11 @@ void Bar::OnPins() {
 }
 
 void Bar::OnPrefs() {
-    prefs::Rearm(prefsEv);
+    if (prefsEv) { // the main dock's watch: every dock follows
+        prefs::Rearm(prefsEv);
+        for (Bar* b : coverBars)
+            if (b != this) b->OnPrefs();
+    }
     islandHere = prefs::IslandInstalled(); // its settings just changed: it may have just been installed
     if (bool q = Quiet(); q != dnd) { // switched in astraeus
         dnd = q;
@@ -1030,6 +1098,7 @@ LRESULT CALLBACK Bar::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         self->hwnd = hwnd; // messages arrive before Create returns
     }
     auto* self = (Bar*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    Census(msg, wp);
     return self ? self->Handle(msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -1046,6 +1115,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
     }
+    if (tasks && moon && tasks->ShellMsg() && msg == tasks->ShellMsg()) return 0; // a moon hears the shell only for its minimize targets: the main dock keeps the list
     if (tasks && tasks->OnShell(msg, wp, lp)) return 0;
     if (tasks && msg >= WM_USER && msg < WM_APP && tasks->OnTaskband(msg, wp, lp)) return 0; // progress and badges, from apps' ITaskbarList3
     if (tbMsg && msg == tbMsg) { // explorer (re)started: its taskbar is back and our reserved strip is gone
@@ -1185,14 +1255,19 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 if (notifStamp && !calOpen) notifUnread = true;
                 notifStamp = s;
                 LoadNotifs();
+                for (Bar* b : coverBars)
+                    if (b != this) b->FollowNotifs();
             }
-            SetCoalescableTimer(hwnd, kNotifPollTimer, full ? 10000 : 2000, nullptr, full ? 5000 : 500); // a fullscreen app shows no pills: the folder watch is soon enough
+            notifPolling = PillsLive(); // no pill could rise (astraeus shows them, quiet, a fullscreen app): the folder watch and the status look are soon enough
+            if (notifPolling) SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500);
             break;
         case kAppsTimer:
             LoadApps(true); // a while after start, in the background: the launcher opens with every icon already there
             break;
         case kNotifReadTimer:
             LoadNotifs();
+            for (Bar* b : coverBars)
+                if (b != this) b->FollowNotifs(); // one watch: the moons read when it fires
             break;
         case kPillTimer:
             pillUp = false;
@@ -1229,9 +1304,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case kFullTimer: // one-shot like every timer here: looked at again for as long as the bar is away
             if (!FullInFront()) SetFull(false);
-            else SetCoalescableTimer(hwnd, kFullTimer, 2000, nullptr, 1000);
+            else SetCoalescableTimer(hwnd, kFullTimer, kFullMs, nullptr, 1000);
             break;
         case kCoverTimer:
+            if (full && !FullInFront()) SetFull(false); // the game or video left the front, or left fullscreen: back at once, not at the slow look
             CheckCovered();
             if (LookNow() == 2) SetTimer(hwnd, kShadeTimer, 500, nullptr); // what's behind the glass may have changed: one look once things settle, a screen read is costly
             break;
@@ -1243,7 +1319,12 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             Arm(0);
             break;
         case kStatsTimer: // the load and the network, only while someone can see them
-            if (HasWg(kWgStats) || HasWg(kWgNet)) SetCoalescableTimer(hwnd, kStatsTimer, 2000, nullptr, 500); // one-shot like every timer here: armed again each time
+            if (!HasWg(kWgStats) && !HasWg(kWgNet)) break;
+            if (StatsUnseen()) { // tucked away or behind a game: no ticks at all, the first frame back in sight starts them again
+                statsParked = true;
+                break;
+            }
+            SetCoalescableTimer(hwnd, kStatsTimer, kStatsMs, nullptr, 500); // one-shot like every timer here: armed again each time
             WidgetTick();
             break;
         case kCaretTimer: // a text field's caret flips
@@ -1276,12 +1357,14 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case kClockTimer:
             ArmClock();
-            Redraw();
+            if (!Hidden()) Redraw(); // tucked away: the frame that brings the dock back draws the new minute
             break;
-        case kRescanTimer:
+        case kRescanTimer: // the main dock's alone: every dock shows the one list
             tasks->Rescan();
-            icons.Keep(tasks->Apps());
-            for (const auto& a : tasks->Apps()) icons.Get(nullptr, a, IconPx()); // read new icons now, not in the middle of a frame
+            for (Bar* b : coverBars) {
+                b->icons.Keep(tasks->Apps());
+                for (const auto& a : tasks->Apps()) b->icons.Get(nullptr, a, b->IconPx()); // read new icons now, not in the middle of a frame
+            }
             if (tray) tray->Prune(); // an app that quit without tidying up its icon
             break;
         case kHoverTimer: {
@@ -1301,15 +1384,33 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case kIdleTimer: Idle(); break;
         case kDevTimer: Redraw(); break;
+        case kHideTimer:
+            if (!moon) taskbar::Hide();
+            if (tray) tray->Reassert();
+            break;
+        case kScreensTimer:
+            if (!ScreensMoved()) { // back as it was: no restart after all
+                if (!full && !IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                Place();
+                break;
+            }
+            if (int now = (int)time(nullptr), last = prefs::ReadNum(L"ScreensAt", 0); now >= last && now - last < kScreensGapSec) {
+                SetTimer(hwnd, kScreensTimer, (UINT)(kScreensGapSec - (now - last)) * 1000, nullptr); // made afresh a moment ago: never a restart storm, whatever the screens do
+                break;
+            }
+            prefs::SaveNum(L"ScreensAt", (int)time(nullptr));
+            PostQuitMessage(2); // every screen's docks made afresh, windows' taskbar kept hidden meanwhile
+            break;
         case kStatusTimer: {
             PollStatus();
             radios.Recheck(); // throttled inside, and nothing once both radios are known
-            if (HasWg(kWgWeather)) weather.Refresh(hwnd, WM_APP_WX); // cached for half an hour: fetches only when that's up
+            if (HasWg(kWgWeather)) RefreshWx(); // cached for half an hour: fetches only when that's up
             if (HasWg(kWgPhoto) && shadeTick % 360 == 0) PickPhoto(); // another picture each hour
             if (HasWg(kWgFiles) && shadeTick % 6 == 0 && !(wgOpen && wgKind == kWgFiles)) LoadFiles(L""); // the newest download, each minute
             if (++shadeTick % 3 == 0) SampleShade(); // a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
             BelowIsland(); // astraeus may have started since: its hover strip goes back over the top bar
             if (auto was = promoted; SyncPromoted(), promoted != was) Redraw(); // an icon moved in or out of the taskbar in windows' settings
+            if (!notifPolling && PillsLive()) notifPolling = true, SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500); // pills can rise again: the quick look comes back
             SetCoalescableTimer(hwnd, kStatusTimer, kStatusMs, nullptr, 1000);
             break;
         }
@@ -1330,8 +1431,17 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 SetForegroundWindow(overflowFore); // closed with escape or a second click: focus stays on the hidden taskbar otherwise
             if (up != overflowUp) overflowUp = up, Redraw(); // the chevron turns
         } else if (wp == Tasks::kTrayShown) {
-            if (!moon) taskbar::Hide();
-            if (tray) tray->Reassert();
+            if (moon) return 0;
+            double now = Seconds();
+            if (now - hideAt > 1) hideStrikes = hideCount > kHideBurst ? (std::min)(hideStrikes + 1, kHideStrikesMax) : 0, hideAt = now, hideCount = 0; // a new second: explorer still fighting, or calm again
+            if (++hideCount <= kHideBurst) {
+                taskbar::Hide();
+                if (tray) tray->Reassert();
+            } else if (hideCount == kHideBurst + 1) {
+                SetTimer(hwnd, kHideTimer, (std::min)(kHideCalmMs << hideStrikes, kHideCalmMaxMs), nullptr); // explorer showing it back as fast as we hide it: one look after a pause that doubles while it keeps on, never a spin
+            }
+        } else if (wp == Tasks::kBadge) {
+            if (!Hidden()) Redraw(); // a progress step: nothing moved, nothing to cover
         } else {
             if (card.Shown()) ShowPreview(); // titles and windows change under the card
             CheckCovered();
@@ -1345,9 +1455,9 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         SetTimer(hwnd, kPreviewHideTimer, kPreviewHideMs, nullptr);
         return 0;
     case Preview::kMediaCmd:
-        if (wp == 0) media.Previous();
-        else if (wp == 1) media.TogglePlay();
-        else media.Next();
+        if (wp == 0) Player().Previous();
+        else if (wp == 1) Player().TogglePlay();
+        else Player().Next();
         return 0;
     case Preview::kDone:
         card.Hide();
@@ -1446,7 +1556,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_APP_WX:
         wx = weather.Get();
-        if (HasWg(kWgWeather)) SyncFit(), Redraw(); // a new temperature may be a digit longer or shorter
+        for (Bar* b : coverBars) { // one fetch for every dock
+            b->wx = wx;
+            if (b->HasWg(kWgWeather)) b->SyncFit(), b->Redraw(); // a new temperature may be a digit longer or shorter
+        }
         return 0;
     case WM_APP_ICON:
         if (icons.Deliver(lp)) Redraw();
@@ -1521,10 +1634,12 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DPICHANGED:
     case WM_DISPLAYCHANGE:
-        if (cfg.screens && (GetSystemMetrics(SM_CMONITORS) != screensAt || (moon && !SameScreen()))) { // a screen came, went or moved: every screen's docks are made afresh, windows' taskbar kept hidden meanwhile
-            PostQuitMessage(2);
+        if (cfg.screens && ScreensMoved()) { // a screen came, went or moved: every screen's docks are made afresh once the screens hold still
+            if (moon && !SameScreen()) ShowWindow(hwnd, SW_HIDE); // its screen is gone: never drawn over another dock meanwhile
+            SetTimer(hwnd, kScreensTimer, kScreensSettleMs, nullptr); // a burst of changes restarts the wait: one restart after it
             return 0;
         }
+        if (took && !moon) taskbar::Hide(); // a screen added: explorer gave it a taskbar of its own
         Place();
         return 0;
     case WM_CLOSE: // taskkill without /f, or any polite request to leave: hand the taskbar back on the way out
@@ -1702,10 +1817,10 @@ void Bar::Frame() {
         }
         TrimSurface(keep, n);
     }
-    if (drawTop || drawBot) SyncMask(); // the blur follows the capsules, the dock and the panel, in the same batch as the frame
-    Present();
+    if (drawTop || drawBot) SyncMask(), Present(); // the blur follows the capsules, the dock and the panel, in the same batch as the frame; nothing drawn, nothing to commit
+    if (statsParked && !StatsUnseen()) statsParked = false, SetTimer(hwnd, kStatsTimer, 1, nullptr); // back in sight: the numbers tick again at once
     devTries = 0; // a frame made it to the screen
-    Log("frame: full presented");
+    Census(0xF0005, (drawTop ? 1 : 0) | (drawBot ? 2 : 0)); // which passes a full frame drew
     if (!took) { // really showing: only now does the windows taskbar step aside
         took = true;
         SetTimer(hwnd, kReserveTimer, kReserveSettleMs, nullptr); // once windows' taskbar has fully let go, the strip at the top is ours

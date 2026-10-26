@@ -666,7 +666,7 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
             c.Text(line, Inset(tr, 10, 0), Weight::Medium, 12, t.text, Align::Center);
         }
         if (!live || !song) return;
-        if (h.clicked && onArt) media.TogglePlay();
+        if (h.clicked && onArt) Player().TogglePlay();
         else if (h.clicked || (input.rclick && Inside(r, input.mouse))) Anchor(Mid(r), false), SetMediaOpen(!mediaOpen);
         return;
     }
@@ -678,7 +678,7 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
         if (song && hov > 0.5f) {
             c.Fill(art, TileRadius() - 2, Color{0, 0, 0, 0.45f});
             c.Icon(track.playing ? glyph::Pause : glyph::Play, {(r.left + r.right) / 2, cy}, 18, Color{1, 1, 1, 1}, true);
-            if (h.clicked) media.TogglePlay(), h.clicked = false;
+            if (h.clicked) Player().TogglePlay(), h.clicked = false;
         }
         if (live && h.hover && song) {
             std::wstring line = track.artist.empty() ? track.title : track.title + L" - " + track.artist;
@@ -714,7 +714,7 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
         if (play) {
             c.Fill(pb, 13, mt.accent.Alpha(bh.hover ? 0.9f : 0.7f));
             c.Icon(track.playing ? glyph::Pause : glyph::Play, po, 16, mt.onAccent, true);
-            if (bh.clicked) media.TogglePlay();
+            if (bh.clicked) Player().TogglePlay();
         } else {
             DrawBars(0, 0, false); // stepped once per frame, before the passes
         }
@@ -724,8 +724,9 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
 }
 
 void Bar::SyncBin() { // asked of the poller: walking every drive's bin takes too long for the ui thread
-    binAsk = true;
-    if (pollWake) SetEvent(pollWake);
+    Bar* src = lead ? lead : this; // the main dock's poller reads it for every dock
+    src->binAsk = true;
+    if (src->pollWake) SetEvent(src->pollWake);
 }
 
 void Bar::BinMenu() {

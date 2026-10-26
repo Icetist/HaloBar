@@ -81,7 +81,7 @@ int VolumeGlyph(float level, bool muted);
 
 class Bar {
 public:
-    void SetMoon(HMONITOR m) { moon = true, moonScreen = m; } // another screen's dock: the taskbar, the tray and updates stay with the main one
+    void SetMoon(HMONITOR m, Bar* main) { moon = true, moonScreen = m, lead = main; } // another screen's dock: the taskbar, the tray and updates stay with the main one, which shares its windows, song, status and forecast
     bool SameScreen() const { // a moon's screen is still there, where it was
         MONITORINFO mi = {sizeof(mi)};
         return GetMonitorInfoW(moonScreen, &mi) && EqualRect(&mi.rcMonitor, &monitor);
@@ -170,6 +170,21 @@ private:
     bool TopAuto() const { return false; } // it slips up out of the way while a window covers it
     void SampleShade(); // how bright the screen is around the top bar and the dock: glass smokes over white pages
     bool Unseen() const { return full; } // behind a fullscreen app: the toolbar is otherwise always in sight
+    bool Hidden() const { return full || (sink > 0.999f && Grown() < 0.5f && !AnyOpen()); } // nothing of this dock on screen: tucked away with nothing risen, or behind a fullscreen app
+    bool StatsUnseen() const { return full || (sink > 0.5f && !wgOpen); } // the load and network numbers can't be seen: not read
+    bool statsParked = false, shadeStale = false; // a tick or a screen read skipped while unseen: done as the dock comes back
+    bool ScreensMoved() const; // a screen came or went since start, or a moon's own one moved
+    static const std::vector<Bar*>& Docks(); // every dock, main one first
+    Bar* lead = nullptr; // a moon's main dock: one window list, one song, one status read and one forecast for every screen
+    sys::Media& Player() { return lead ? lead->media : media; }
+    sys::Meter& Peaks() { return lead ? lead->meter : meter; }
+    void RefreshWx(); // the main dock fetches; the answer goes to every dock
+    void TakeStatus(const sys::Status& s, int bin); // the poller's read, applied to this dock
+    void FollowNotifs(); // a moon: the main dock saw windows' notification store change
+    bool PillsLive() const; // a new notification would rise as a pill right now: the store is looked at often
+    bool notifPolling = false; // the quick look at the store is armed
+    double hideAt = 0; // explorer showing its taskbar back: this second's count, and how many seconds in a row it kept on
+    int hideCount = 0, hideStrikes = 0;
     void CheckCovered(); // does a window sit where the island rests
     void HookCover(bool on);
     static void CALLBACK OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD);
@@ -538,7 +553,7 @@ private:
     UINT tbMsg = 0; // TaskbarCreated: explorer restarted, or the tray host asked apps to re-add their icons
     double tbSelfAt = -10; // when we sent TaskbarCreated ourselves, so we don't answer our own call
 
-    std::unique_ptr<Tasks> tasks;
+    std::shared_ptr<Tasks> tasks; // the main dock's, shared by the moons: one walk of the windows, one pin list
     std::unique_ptr<TrayHost> tray;
     Icons icons;
     sys::Media media;
@@ -620,7 +635,6 @@ private:
     float sink = 0; // auto-hide: 0 showing, 1 tucked below the screen's edge
     bool covered = false, peek = false; // a window sits where the island rests; the mouse came to the edge to call it back
     POINT parkedAt{LONG_MIN, LONG_MIN}; // the cursor as the dock tucked away: the edge strip appearing under a still cursor is no call back
-    HWINEVENTHOOK coverHooks[3] = {}, moveHook = nullptr; // what moves windows: focus, drags, minimizes; and the app in front's own moves
 
     sys::Radios radios;
     sys::Bright bright;

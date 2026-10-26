@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 #include "overflow.h"
@@ -18,6 +19,8 @@
 
 using Microsoft::WRL::ComPtr;
 
+void Census(UINT what, WPARAM sub, int add = 1); // bar.cpp: DebugLog's tally of what wakes the ui thread
+
 namespace {
 
 Tasks* live = nullptr; // win event hooks call a plain function: this is who they're for
@@ -25,6 +28,7 @@ Tasks* live = nullptr; // win event hooks call a plain function: this is who the
 // what CTaskbarList in every app posts to the window named by the tray's TaskbandHWND property
 constexpr UINT kTbProgress = WM_USER + 64, kTbState = WM_USER + 65, kTbOverlay = WM_USER + 79;
 constexpr float kTbScale = 65534.0f; // progress arrives scaled to this
+constexpr float kTbStep = 0.004f; // a quarter of a percent: finer than the ring can draw
 
 std::wstring Title(HWND h) {
     wchar_t buf[256]; // longer titles are cut; the row never shows that much anyway
@@ -145,10 +149,31 @@ Tasks::~Tasks() {
         if (b.overlay) DestroyIcon(b.overlay); // our copies, made in OnTaskband
     for (void* h : hooks) UnhookWinEvent(static_cast<HWINEVENTHOOK>(h));
     DeregisterShellHookWindow(notify);
+    for (HWND h : others) DeregisterShellHookWindow(h);
     if (live == this) live = nullptr; // a late event after unhooking finds nobody
 }
 
+void Tasks::Listen(HWND h) {
+    if (!h || h == notify || std::find(others.begin(), others.end(), h) != others.end()) return;
+    others.push_back(h);
+    RegisterShellHookWindow(h); // its own minimize targets: windows asks every shell hook window where a window flies
+}
+
+void Tasks::Unlisten(HWND h) {
+    auto it = std::find(others.begin(), others.end(), h);
+    if (it == others.end()) return;
+    DeregisterShellHookWindow(h);
+    others.erase(it);
+}
+
+void Tasks::Ping(WPARAM what) const {
+    PostMessageW(notify, msg, what, 0);
+    if (what == kRescan || what == kTrayShown) return; // the main dock's alone: it walks the windows and hides explorer's taskbar
+    for (HWND h : others) PostMessageW(h, msg, what, 0);
+}
+
 void CALLBACK Tasks::OnEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD) {
+    Census(0xF0003, ev);
     if (!live || !h || obj != OBJID_WINDOW || child != CHILDID_SELF) return; // the window itself, not a control inside it
     live->Event(ev, h);
 }
@@ -182,8 +207,8 @@ void Tasks::Event(DWORD ev, HWND h) {
             Ping(kOverflow); // explorer opened its flyout over its own hidden chevron: the bar moves it over its button
             return;
         }
-        if (taskbar::IsTray(h)) {
-            Ping(kTrayShown); // explorer brought its taskbar back: hide it again
+        if (taskbar::IsTray(h) || taskbar::IsSecondary(h)) {
+            Ping(kTrayShown); // explorer brought a taskbar back, on this screen or another: hide it again
             return;
         }
         if (GetAncestor(h, GA_ROOT) == h) { // astraeus started after us: the bar steps under it at once
@@ -428,14 +453,20 @@ bool Tasks::OnTaskband(UINT m, WPARAM wp, LPARAM lp) {
     HWND h = reinterpret_cast<HWND>(wp);
     if (!h || !IsWindow(h)) return true; // handled, just about a window that's gone
     Badge& b = badges[h];
-    if (m == kTbProgress) b.value = (std::min)(1.0f, (float)(DWORD)lp / kTbScale);
-    else if (m == kTbState) b.state = (int)lp; // TBPF_ flags: 0 none, 1 indeterminate, 2 normal, 4 error, 8 paused
-    else {
+    if (m == kTbProgress) {
+        float v = (std::min)(1.0f, (float)(DWORD)lp / kTbScale);
+        bool seen = std::fabs(v - b.value) >= kTbStep || (v != b.value && (v == 0 || v == 1)); // a download reports many times a second: only a step the ring shows wakes the docks
+        if (seen) b.value = v;
+        if (!seen) return true;
+    } else if (m == kTbState) {
+        if (b.state == (int)lp) return true; // apps repeat their state with every update
+        b.state = (int)lp; // TBPF_ flags: 0 none, 1 indeterminate, 2 normal, 4 error, 8 paused
+    } else {
         if (b.overlay) DestroyIcon(b.overlay);
         b.overlay = lp ? CopyIcon(reinterpret_cast<HICON>(lp)) : nullptr; // the sender may free its icon at any time
         ++b.ver; // tells the dock its cached bitmap is stale
     }
-    Ping(kChanged);
+    Ping(kBadge);
     return true;
 }
 

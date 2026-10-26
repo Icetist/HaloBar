@@ -299,7 +299,7 @@ void Bar::SyncWidgets() {
     }
     if (HasWg(kWgStats) || HasWg(kWgNet)) SetCoalescableTimer(hwnd, kStatsTimer, 2000, nullptr, 500); // both read every 2 s while in sight
     else KillTimer(hwnd, kStatsTimer);
-    if (HasWg(kWgWeather)) weather.Refresh(hwnd, WM_APP_WX); // cached half an hour: a no-op most of the time
+    if (HasWg(kWgWeather)) RefreshWx(); // cached half an hour: a no-op most of the time
     if (HasWg(kWgWater)) water = prefs::ReadNum(L"WaterDay", 0) == WgToday() ? prefs::ReadNum(L"WaterCount", 0) : 0; // a new day starts at none
     if ((HasWg(kWgNotes)) && !noteLoaded) noteLoaded = true, note = ReadUtf8(LocalFile(L"notes.txt"));
     if ((HasWg(kWgTodo) || HasWg(kWgHabit)) && !listsLoaded) { // read once: the panels write them back

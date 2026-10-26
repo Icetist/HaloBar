@@ -94,7 +94,7 @@ Measured on a 4-thread laptop with music playing, over 15 minutes of normal use:
 ## 📦 Installation
 
 1. Download `HaloBar.exe` from the [latest release](https://github.com/Icetist/HaloBar/releases/latest).
-2. Put it somewhere it can stay, for example `%LOCALAPPDATA%\Programs\HaloBar`, and run it.
+2. Run it from anywhere. HaloBar installs itself to `%LOCALAPPDATA%\Programs\HaloBar`, adds itself to the Start menu and runs from there.
 
 The Windows taskbar steps aside while HaloBar runs and comes back the moment it exits. HaloBar starts with Windows from then on and keeps itself up to date.
 
@@ -142,7 +142,7 @@ No. HaloBar works on its own. With Astraeus installed, the two share their look,
 <details>
 <summary><b>Does it work with more than one screen?</b></summary>
 
-Yes. HaloBar puts a dock on every screen, as Windows does. In settings, **Screens** shows your monitors as they stand: pick one for a single dock there, or keep every screen. The tray and notifications stay with the main one.
+Yes. HaloBar puts a dock on every screen, as Windows does. In settings, **Screens** shows your monitors as they stand: pick one for a single dock there, or keep every screen. The tray and notifications stay with the main one. While HaloBar runs, the Windows taskbar stays off every screen, and comes back as you had it when HaloBar exits.
 
 </details>
 
