@@ -281,7 +281,9 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
         break;
     }
     case kWgClip: {
-        std::wstring last = clips.empty() ? L"Nothing copied yet" : ClipLine(clips.front());
+        if (live) clipAnchor = Mid(r); // the quick key opens the panel over it
+        const clip::Store& st = clip::History();
+        std::wstring last = st.opt.paused ? L"Paused" : st.items.empty() ? L"Nothing copied yet" : clip::Line(st.items.front());
         if (tiny) c.Icon(glyph::SysPaste, {cx, mid}, 19, t.textDim);
         else lines(glyph::SysPaste, t.textDim, large ? L"Clipboard" : last, large ? last : L"");
         break;

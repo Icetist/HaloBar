@@ -42,6 +42,7 @@ public:
     Tasks& operator=(const Tasks&) = delete;
 
     void Rescan(); // walk the windows again, after a burst of kRescan
+    void Pause(bool on); // a fullscreen game in front: only the foreground hook stays, so other apps' show, hide and title events never cross over; a walk on return
     bool OnShell(UINT msg, WPARAM wp, LPARAM lp); // true if it was the shell hook message
     bool OnTaskband(UINT msg, WPARAM wp, LPARAM lp); // true if it was an ITaskbarList3 message
     const std::vector<TaskApp>& Apps() const { return apps; }
@@ -76,7 +77,9 @@ private:
     HWND notify;
     std::vector<HWND> others; // the moons' windows
     UINT msg, shellMsg = 0;
-    std::vector<void*> hooks;
+    std::vector<void*> hooks; // the first is the foreground's: it stays through a pause
+    bool paused = false;
+    void HookRest();
     std::vector<TaskApp> apps;
     std::vector<PinItem> pinList;
     std::unordered_map<HWND, Badge> badges;

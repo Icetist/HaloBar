@@ -230,6 +230,7 @@ float Brightness(const RECT& r) { // average luminance 0..1 of what's on screen 
 
 void Bar::SampleShade() { // two thin bands beside the bars, never under them: what shows there is what the glass sits over
     float top = 0, bot = 0;
+    if (LookNow() == 2 && (full || sink > 0.5f)) return; // tucked or behind a game: a screen read for nobody; the next tick after it's back reads
     if (LookNow() == 2 && !AnyOpen() && !full) { // an open panel would be measured instead of the page
         auto k = [](float l) { return anim::Clamp01((l - 0.42f) / 0.38f); }; // dark and colourful stay clear, bright pages get a deeper tint
         LONG band = (LONG)std::lround(8 * scale), y = monitor.top + (LONG)std::lround(kBarH * scale), q = winPxW / 4; // thin and only the middle half: a screen read costs by its size

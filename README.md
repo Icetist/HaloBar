@@ -32,6 +32,16 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 
 ## ✨ Features
 
+- **Your apps.** Pinned and running apps, in the same order as the Windows taskbar, with live window previews, jump lists, per-app volume on scroll and a **+N** tile when they don't all fit.
+- **Widgets, picked from a gallery.** Now playing, weather, system stats, clipboard, notes, calendar, focus timer and about twenty more, in small, medium and large, dragged wherever you like in edit mode.
+- **A clipboard that keeps up.** Fuzzy search, pins, tabs for text, code, links, files, media and colours, code highlighting, colour swatches in any notation, tracking-free links and paste straight into the app you came from.
+- **Quick settings and notifications.** Wi-Fi, Bluetooth, volume, brightness and a dozen toggles, joining networks and pairing devices in place, with your notifications beside a month view.
+- **Your look.** Astraeus' themes (Dark, Light, Glass or Custom), opacity and blur sliders, three sizes, a dock on every screen and any edge.
+- **Out of a game's way.** A fullscreen game gets its screen to itself, while the docks on your other screens keep working.
+
+<details>
+<summary><b>More features</b></summary>
+
 - **Your apps.** Pinned and running apps, in the same order and with the same pins as the Windows taskbar. Rest on one and its name rises above it; hover for live window previews, right-click for the app's windows and recent files, middle-click for a new window, and scroll over an app to change its own volume. Windows minimize into their icon. When they don't all fit, a **+N** tile holds the rest.
 - **Drop files on an app.** Drag a file onto an app in the dock to open it there. Hold it over the app for a moment and its window comes up, so you can drop straight into it, as on the Windows taskbar.
 - **Keyboard, as on Windows.** **Win + 1–9** opens, shows or tucks away the app in that spot, **Win + T** walks the dock with the arrow keys and Enter, and **Win + B** opens the tray.
@@ -48,6 +58,8 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 - **Every screen, any edge.** A dock on every screen, or on the one you pick from a little map of your monitors. Put it at the bottom (centered, from the left or from the right) or on the left or right edge; it moves there live, without the Windows taskbar flashing up in between.
 - **Windows' taskbar, any time.** One button in settings hands the taskbar back to Windows; HaloBar waits as a tray icon whose little dashboard brings it back.
 - **Updates itself** and **starts with Windows.** New releases install silently once their SHA-256 matches the one published with them.
+
+</details>
 
 ## 📸 Screenshots
 
@@ -84,12 +96,14 @@ HaloBar draws only while something on it moves, and only the part that moved. Wi
 
 A blinking caret books one frame per blink instead of redrawing its panel all the time, the visualizer's frames repaint only the little square the bars live in, without working out curves and outlines that can't reach it, and the glass outline is handed to Windows only when it actually moves.
 
-Measured on a 4-thread laptop with music playing, over 15 minutes of normal use:
+Behind a fullscreen game it draws nothing, stops its status checks, unhooks other apps' window events and steps down in priority, unless a dock on another screen is still in use. Busy animations are held to 60 fps, so a 144 or 240 Hz screen doesn't multiply the cost.
 
-| | CPU | Memory (private) |
-|---|---|---|
-| Dock tucked under a window | ~220 ms per 30 s (0.7% of one core) | ~43 MB |
-| Dock sliding out or showing | ~0.2 s per second while it moves | ~43 MB |
+Measured on a 4-thread laptop at 1366×768:
+
+| | CPU | Memory (private) | GPU memory |
+|---|---|---|---|
+| Idle, dock tucked away | ~7.6 ms per second | ~33 MB | ~2 MB |
+| Fullscreen game in front | 0.2% of one core | ~37 MB | 0% GPU use |
 
 ## 📦 Installation
 

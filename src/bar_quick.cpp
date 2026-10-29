@@ -139,7 +139,9 @@ void Bar::OnPolled(LPARAM lp) {
 }
 
 void Bar::TakeStatus(const sys::Status& s, int bin) {
-    bool changed = !(s == status);
+    sys::Status a = s, b = status;
+    a.signal = WifiGlyph(s), b.signal = WifiGlyph(status); // the signal moves a few points every read: only a new number of bars is worth a frame
+    bool changed = !(a == b);
     status = s;
     if (bin >= 0 && (bin != 0) != binFull) binFull = bin != 0, changed = true;
     if (changed) SyncFit(), Redraw(); // the battery widget's words may have changed length

@@ -32,7 +32,7 @@ constexpr float kGalleryRise = 470;
 
 }
 
-float Bar::WidgetPanelW() const { return wgKind == kWgGallery ? kGalleryW : kWgW; }
+float Bar::WidgetPanelW() const { return wgKind == kWgGallery ? kGalleryW : wgKind == kWgClip ? ClipW() : kWgW; }
 
 float Bar::WidgetRise() const {
     auto list = [&](size_t n) { return kHead + 14 + (float)(std::max)((size_t)1, (std::min)(n, (size_t)kListRows)) * kRow + 46; };
@@ -40,7 +40,7 @@ float Bar::WidgetRise() const {
     case kWgGallery: return kGalleryRise;
     case kWgWeather: return 214;
     case kWgStats: return 176;
-    case kWgClip: return list(clips.size());
+    case kWgClip: return ClipRise();
     case kWgFiles:
     case kWgFolder: return kHead + 14 + (float)(std::max)(1, ((int)files.size() + kFileCols - 1) / kFileCols) * kFileRowH + 20;
     case kWgNotes: return 240;
@@ -147,38 +147,10 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         if (stats.gpu >= 0) swprintf_s(buf, L"%.0f%%", stats.gpu * 100), bar(L"Graphics", buf, stats.gpu);
         break;
     }
-    case kWgClip: {
-        head(L"CLIPBOARD");
-        if (LabelButton(t, Ui::Id("wg.clip.clear"), Rect(r.right - 86, r.top - 6, 86, 26), glyph::Delete, L"Clear")) clips.clear(), Redraw();
-        float y = r.top + kHead;
-        if (clips.empty()) c.Text(L"Copy some text or an image and it shows here", Rect(r.left, y + 6, Width(r), 18), Weight::Regular, 12.5f, t.textDim, Align::Center);
-        int pick = -1, drop = -1;
-        for (size_t i = 0; i < clips.size() && i < (size_t)kListRows; ++i, y += kRow) {
-            auto [rr, h] = row(Ui::Id("wg.clip", (int)i), y);
-            Clip& cl = clips[i];
-            float tx = rr.left + 10;
-            if (!cl.png.empty()) { // the picture itself, small, before its size
-                if (!cl.thumb && cl.pixels && ctx) ctx->CreateBitmapFromWicBitmap(cl.pixels.Get(), nullptr, &cl.thumb);
-                float th = Height(rr) - 8, tw = cl.h ? (std::min)(th * cl.w / cl.h, 4 * th) : th;
-                D2D1_RECT_F pic = Rect(tx, (rr.top + rr.bottom) / 2 - th / 2, tw, th);
-                if (cl.thumb) c.Image(cl.thumb.Get(), pic, 4, 1);
-                else c.Fill(pic, 4, t.text.Alpha(0.08f));
-                tx = pic.right + 10;
-            }
-            c.Text(ClipLine(cl), Rect(tx, rr.top, rr.right - 10 - tx, Height(rr)), Weight::Regular, 12.5f, cl.png.empty() ? t.text : t.textDim);
-            if (h.clicked) pick = (int)i;
-            if (input.rclick && Inside(rr, input.mouse)) drop = (int)i;
-        }
-        c.Text(L"Click to copy again  ·  right click to forget", Rect(r.left, r.bottom - 18, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
-        if (pick >= 0) {
-            CopyClip(pick);
-            SetPanel(Panel::None);
-        } else if (drop >= 0) {
-            clips.erase(clips.begin() + drop), Redraw(); // right click: forgotten
-        }
+    case kWgClip:
+        DrawClip(t, r);
         closeOnRight = false;
         break;
-    }
     case kWgFiles:
     case kWgFolder: {
         static const wchar_t* const kNames[] = {L"DOCUMENTS", L"DESKTOP", L"PICTURES", L"MUSIC", L"VIDEOS"};
@@ -469,6 +441,10 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
             int cur = 1;
             for (int i = 0; i < 4; ++i) cur = kGoals[i] == waterGoal ? i : cur;
             opt("gal.water", {L"6", L"8", L"10", L"12"}, cur, [&](int i) { waterGoal = kGoals[i], prefs::SaveNum(L"WgWaterGoal", waterGoal), Redraw(); });
+        } else if (s.kind == kWgClip) {
+            clip::Store& st = clip::History();
+            opt("gal.clipview", {L"List", L"Grid"}, st.opt.view, [&](int i) { st.opt.view = i, st.SaveOptions(), Redraw(); });
+            if (chip(Ui::Id("gal.clipmore"), Rect(x + 110, cy - 12, 100, 24), L"More options", false)) OpenClip(W / 2, true);
         } else if (s.kind == kWgFolder) {
             opt("gal.folder", {L"Docs", L"Desktop", L"Pics", L"Music", L"Videos"}, folderPick, [&](int i) { folderPick = i, prefs::SaveNum(L"WgFolder", i), Redraw(); });
         }

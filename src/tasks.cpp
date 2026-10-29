@@ -137,11 +137,29 @@ Tasks::Tasks(HWND n, UINT m) : notify(n), msg(m) {
         if (HWINEVENTHOOK h = SetWinEventHook(from, to, nullptr, OnEvent, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)) hooks.push_back(h);
     };
     hook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND); // the app in front gets the accent capsule
+    HookRest();
+    fore = GetForegroundWindow();
+    pinList = pins::Load(); // explorer's own pins, read from its registry lists
+}
+
+void Tasks::HookRest() {
+    auto hook = [&](DWORD from, DWORD to) {
+        if (HWINEVENTHOOK h = SetWinEventHook(from, to, nullptr, OnEvent, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)) hooks.push_back(h);
+    };
     hook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE); // destroy, show, hide: separate ranges keep the cursor's location spam out
     hook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE); // titles, and windows that only become eligible once named
     hook(EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED); // virtual desktop switches
-    fore = GetForegroundWindow();
-    pinList = pins::Load(); // explorer's own pins, read from its registry lists
+}
+
+void Tasks::Pause(bool on) {
+    if (on == paused) return;
+    paused = on;
+    if (on) {
+        while (hooks.size() > 1) UnhookWinEvent(static_cast<HWINEVENTHOOK>(hooks.back())), hooks.pop_back();
+        return;
+    }
+    HookRest();
+    Ping(kRescan); // what came and went meanwhile
 }
 
 Tasks::~Tasks() {

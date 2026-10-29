@@ -7,15 +7,59 @@
 #include <cmath>
 
 #include "glyphs.h"
+#include "setui.h"
 #include "version.h"
+
+namespace setui { // settings' card, switch and segmented control: the clipboard panel's options wear them too
+
+D2D1_RECT_F Box(Canvas& c, const Theme& t, const D2D1_RECT_F& r, const wchar_t* title) { // island's card shell, returns its inner area
+    c.Fill(r, 16, t.cardHi.Alpha(0.55f));
+    c.StrokeV(r, 16, t.hairTop, t.hairBot, 1);
+    c.TextSp(title, Rect(r.left + 14, r.top + 11, Width(r) - 28, 12), Weight::Medium, 9.5f, t.textLow, 1.4f); // small spaced caps, island's card label
+    return {r.left + 12, r.top + 30, r.right - 12, r.bottom - 10};
+}
+
+int Segmented(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& r, const wchar_t* const* labels, int n, int cur) {
+    Canvas& c = ui.C();
+    float seg = Width(r) / n, rad = Height(r) / 2;
+    c.Fill(r, rad, t.track.Alpha(0.7f));
+    float x = ui.Smooth(Ui::Id(id, 99), r.left + seg * cur, 18); // the thumb slides between options
+    c.Fill({x + 3, r.top + 3, x + seg - 3, r.bottom - 3}, rad - 3, t.accent); // solid, as every other picked control in settings
+    int picked = -1;
+    for (int i = 0; i < n; ++i) {
+        D2D1_RECT_F cell = {r.left + seg * i, r.top, r.left + seg * (i + 1), r.bottom};
+        Ui::Hit h = ui.Button(Ui::Id(id, i), cell);
+        if (h.clicked && i != cur) picked = i; // the current one again changes nothing
+        c.Text(labels[i], cell, Weight::Medium, 11.5f, i == cur ? t.onAccent : t.textDim.Mix(t.text, h.hover ? 0.6f : 0), Align::Center);
+    }
+    return picked;
+}
+
+void Toggle(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& row, const wchar_t* label, bool on, bool& flip) { // island's switch row: the words flip it too
+    Canvas& c = ui.C();
+    Ui::Hit h = ui.Button(Ui::Id(id, 1), {row.left, row.top, row.right - 52, row.bottom});
+    c.Text(label, Rect(row.left, row.top, Width(row) - 56, Height(row)), Weight::Regular, 11.5f, h.hover ? t.text : t.text.Mix(t.textDim, 0.25f));
+    if (w::Switch(ui, t, Ui::Id(id), {row.right - 24, (row.top + row.bottom) / 2}, on) || h.clicked) flip = true; // reported, so the caller saves it after drawing
+}
+
+void Note(Canvas& c, const Theme& t, const D2D1_RECT_F& in, float y, const wchar_t* text) { // a quiet line under the controls, as island's
+    c.Text(text, Rect(in.left, y, Width(in), kNoteLine), Weight::Light, 10.5f, t.textLow);
+}
+
+}
+
+
+using namespace setui;
 
 namespace {
 
 constexpr float kPi = 3.14159265f;
 constexpr float kHeroW = 210; // the orb's column
 constexpr float kPad = 16, kCardGap = 10; // the sheet's margin, and the space between cards
-constexpr float kSliderRow = 42; // under the theme swatches: their names, then the blur or opacity slider
-constexpr float kInstH = 140; // the instrument cards: theme, size, position, screens, dock
+constexpr float kSliderRow = 66; // under the theme swatches: their names, then the blur or opacity slider's label and its roomy row
+constexpr float kSlideH = 32; // a slider's row: the whole height takes the mouse
+constexpr float kInstH = 140; // the instrument cards: size, position, screens, dock
+constexpr float kThemeH = 168; // the first row: the theme card's swatches and its slider
 // a switch card hugs its rows: island's density. not kRowH: the bar has its own, the dock's height, and it would win inside Bar's members
 constexpr float kLineH = 34, kNoteH = 14, kSegRow = 32; // a switch line, a quiet note line, a segmented control with its gap
 constexpr float kHead = 30, kFoot = 10; // Box's title band above the rows, its padding below them
@@ -62,9 +106,12 @@ Color FromHsv(Hsv x) {
     return {r + m, g + m, b + m, 1}; // always opaque: these are fills, not tints
 }
 
+ComPtr<ID2D1Bitmap> wheelBmp;
+ComPtr<ID2D1Device> wheelOwner; // held, so a new device can't reuse its address; let go in FreeWheel, or the old device lives on
+
 ID2D1Bitmap* WheelBmp(ID2D1RenderTarget* rt) { // hue around, saturation outward, at full brightness; made once per device
-    static ComPtr<ID2D1Bitmap> bmp;
-    static ComPtr<ID2D1Device> owner; // held, so a new device can't reuse its address
+    ComPtr<ID2D1Bitmap>& bmp = wheelBmp;
+    ComPtr<ID2D1Device>& owner = wheelOwner;
     ComPtr<ID2D1DeviceContext> dc;
     ComPtr<ID2D1Device> dev;
     if (SUCCEEDED(rt->QueryInterface(IID_PPV_ARGS(&dc)))) dc->GetDevice(&dev);
@@ -114,46 +161,12 @@ bool SystemClock24() { // what windows' own clock does, for "follow"
 }
 
 
-D2D1_RECT_F Box(Canvas& c, const Theme& t, const D2D1_RECT_F& r, const wchar_t* title) { // island's card shell, returns its inner area
-    c.Fill(r, 16, t.cardHi.Alpha(0.55f));
-    c.StrokeV(r, 16, t.hairTop, t.hairBot, 1);
-    c.TextSp(title, Rect(r.left + 14, r.top + 11, Width(r) - 28, 12), Weight::Medium, 9.5f, t.textLow, 1.4f); // small spaced caps, island's card label
-    return {r.left + 12, r.top + 30, r.right - 12, r.bottom - 10};
-}
-
-int Segmented(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& r, const wchar_t* const* labels, int n, int cur) {
-    Canvas& c = ui.C();
-    float seg = Width(r) / n, rad = Height(r) / 2;
-    c.Fill(r, rad, t.track.Alpha(0.7f));
-    float x = ui.Smooth(Ui::Id(id, 99), r.left + seg * cur, 18); // the thumb slides between options
-    c.Fill({x + 3, r.top + 3, x + seg - 3, r.bottom - 3}, rad - 3, t.accent); // solid, as every other picked control in settings
-    int picked = -1;
-    for (int i = 0; i < n; ++i) {
-        D2D1_RECT_F cell = {r.left + seg * i, r.top, r.left + seg * (i + 1), r.bottom};
-        Ui::Hit h = ui.Button(Ui::Id(id, i), cell);
-        if (h.clicked && i != cur) picked = i; // the current one again changes nothing
-        c.Text(labels[i], cell, Weight::Medium, 11.5f, i == cur ? t.onAccent : t.textDim.Mix(t.text, h.hover ? 0.6f : 0), Align::Center);
-    }
-    return picked;
-}
-
 void Monitor(Canvas& c, const Theme& t, const D2D1_RECT_F& s) { // a little screen on a stand, as island's
     float mx = (s.left + s.right) / 2;
     c.Fill(Rect(mx - 6, s.bottom, 12, 5), 2, t.track);
     c.Fill(Rect(mx - 15, s.bottom + 5, 30, 3), 1.5f, t.track);
     c.FillV(s, 7, t.track.Alpha(0.9f), t.track.Alpha(0.5f));
     c.Stroke(s, 7, t.hairTop, 1);
-}
-
-void Toggle(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& row, const wchar_t* label, bool on, bool& flip) { // island's switch row: the words flip it too
-    Canvas& c = ui.C();
-    Ui::Hit h = ui.Button(Ui::Id(id, 1), {row.left, row.top, row.right - 52, row.bottom});
-    c.Text(label, Rect(row.left, row.top, Width(row) - 56, Height(row)), Weight::Regular, 11.5f, h.hover ? t.text : t.text.Mix(t.textDim, 0.25f));
-    if (w::Switch(ui, t, Ui::Id(id), {row.right - 24, (row.top + row.bottom) / 2}, on) || h.clicked) flip = true; // reported, so the caller saves it after drawing
-}
-
-void Note(Canvas& c, const Theme& t, const D2D1_RECT_F& in, float y, const wchar_t* text) { // a quiet line under the controls, as island's
-    c.Text(text, Rect(in.left, y, Width(in), kNoteH), Weight::Light, 10.5f, t.textLow);
 }
 
 D2D1_RECT_F MiniDock(const D2D1_RECT_F& q, int edge, int align, float thick) { // where the dock sits on a little screen
@@ -184,10 +197,12 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
 
     D2D1_RECT_F view = {gx, area.top + 30, area.right, area.bottom}; // what shows; the cards below it scroll into it
     float cw = (Width(view) - 2 * kCardGap) / 3, half = (Width(view) - kCardGap) / 2;
-    float content = 2 * kInstH + kPairH + kPrefH + kModsH + 2 * kWideH + 6 * kCardGap; // island's order: the instruments, then switch cards two across, then the wide ones
+    float content = kThemeH + kInstH + kPairH + kPrefH + kModsH + 2 * kWideH + 6 * kCardGap; // island's order: the instruments, then switch cards two across, then the wide ones
     float most = (std::max)(0.0f, content - Height(view));
     uint32_t sid = Ui::Id("set.scroll");
-    if (float notch = ui.Wheel(view); notch != 0) setScroll = (std::clamp)(setScroll - notch * kNotch, 0.0f, most);
+    bool overSlide = slideHot; // the wheel over a slider steps it, not the sheet
+    slideHot = false;
+    if (float notch = overSlide ? 0 : ui.Wheel(view); notch != 0) setScroll = (std::clamp)(setScroll - notch * kNotch, 0.0f, most);
     setScroll = (std::min)(setScroll, most); // a bigger size leaves less to scroll
     float scroll = ui.Smooth(sid, setScroll, 18);
     D2D1_RECT_F grid = {view.left, view.top - scroll, view.right, view.bottom - scroll};
@@ -197,9 +212,9 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     if (masked) input.mouse = {-1e4f, -1e4f}, ui.Shift(kAway); // the ui hit-tests its own copy of the mouse: moved off too
     rt->PushAxisAlignedClip(Inset(view, -4, 0), D2D1_ANTIALIAS_MODE_ALIASED);
     float y = grid.top;
-    SetMaterial(t, Rect(grid.left, y, 2 * cw + kCardGap, kInstH)); // materials need room for five swatches: two cells wide
-    SetSize(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kInstH));
-    y += kInstH + kCardGap;
+    SetMaterial(t, Rect(grid.left, y, 2 * cw + kCardGap, kThemeH)); // materials need room for five swatches: two cells wide
+    SetSize(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kThemeH));
+    y += kThemeH + kCardGap;
     SetPlace(t, Rect(grid.left, y, cw, kInstH)); // island's own trio: where it sits, on which screens
     SetScreens(t, Rect(grid.left + cw + kCardGap, y, cw, kInstH));
     SetRoom(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kInstH));
@@ -359,18 +374,18 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
     int lo = ownGlass ? 0 : prefs::Settings::kMinOpacity;
     float v = (field - lo) / (float)(100 - lo);
     uint32_t id = Ui::Id(ownGlass ? "set.blur" : "set.opacity");
-    D2D1_RECT_F bar = {in.left + 64, in.bottom - 16, in.right - 50, in.bottom - 4};
-    c.TextSp(ownGlass ? L"BLUR" : L"OPACITY", Rect(in.left, bar.top, 60, 12), Weight::Medium, 9.5f, t.textLow, 1.6f);
-    c.Text(std::to_wstring(field) + L"%", Rect(in.right - 46, bar.top - 3, 46, 16), Weight::Semi, 12, t.accentHi, Align::Right);
-    D2D1_RECT_F knob = Inset(bar, 6, -6); // a taller hit area than the thin rail
-    if (ui.Slider(id, knob, v, false)) field = lo + (int)(v * (100 - lo) + 0.5f), Redraw(); // live
-    if (ui.IsActive(id) && input.released) prefs::SaveNum(ownGlass ? L"GlassBlur" : L"Opacity", field); // saved once, on release: astraeus following the bar picks it up
-    float rad = Height(bar) / 2, cy = (bar.top + bar.bottom) / 2, x = knob.left + Width(knob) * ((field - lo) / (float)(100 - lo));
-    c.FillH(bar, rad, Color{1, 1, 1, 0.04f}, Color{1, 1, 1, 0.55f}); // clear to frosted, or to the body itself, left to right
-    c.Stroke(bar, rad, t.hairTop, 1);
-    c.FillH({bar.left, bar.top, x + rad, bar.bottom}, rad, t.accent.Alpha(0.35f), t.accentHi.Alpha(0.55f));
-    c.Dot({x, cy}, rad + 3, Color{1, 1, 1, 1});
-    c.Ring({x, cy}, rad + 3, t.accent, 2);
+    D2D1_RECT_F row = Rect(in.left - 4, in.bottom - kSlideH, Width(in) + 8, kSlideH); // the full width: room to place it finely
+    c.TextSp(ownGlass ? L"BLUR" : L"OPACITY", Rect(in.left, row.top - 14, 120, 12), Weight::Medium, 9.5f, t.textLow, 1.6f);
+    c.Text(std::to_wstring(field) + L"%", Rect(in.right - 60, row.top - 17, 60, 16), Weight::Semi, 12, t.accentHi, Align::Right);
+    w::SlideLook lk;
+    lk.bubble = std::to_wstring(field) + L"%";
+    lk.step = 5.0f / (100 - lo); // 5% a notch
+    if (Inside(row, input.mouse)) slideHot = true;
+    if (w::Slide(ui, t, id, row, v, lk)) {
+        field = lo + (int)(v * (100 - lo) + 0.5f), Redraw(); // live
+        if (!ui.IsActive(id)) prefs::SaveNum(ownGlass ? L"GlassBlur" : L"Opacity", field); // a wheel notch: kept at once
+    }
+    if (ui.IsActive(id) && input.released) prefs::SaveNum(ownGlass ? L"GlassBlur" : L"Opacity", field); // a drag: saved once, on release; astraeus following the bar picks it up
 }
 
 void Bar::SetSize(const Theme& t, const D2D1_RECT_F& r) { // three little islands, small to large
@@ -674,24 +689,21 @@ void Bar::SetWheel(const Theme& t, D2D1_POINT_2F o, float R) {
 }
 
 void Bar::SetShade(const Theme& t, const D2D1_RECT_F& r) { // brightness of the selected handle: black to its full color
-    Canvas& c = ui.C();
     Hsv x = HandleOf(wheelPick, WheelColor(wheelPick));
-    float rad = Height(r) / 2;
-    c.FillH(r, rad, Color{0, 0, 0, 1}, FromHsv({x.h, x.s, 1})); // the full range this handle's hue can take
-    c.Stroke(r, rad, t.hairTop, 1);
     uint32_t id = Ui::Id("set.shade");
     float v = x.v;
-    D2D1_RECT_F rail = {r.left + rad, r.top - 4, r.right - rad, r.bottom + 4};
-    if (ui.Slider(id, rail, v, false)) {
+    D2D1_RECT_F row = {r.left - 14, (r.top + r.bottom) / 2 - kSlideH / 2, r.right + 14, (r.top + r.bottom) / 2 + kSlideH / 2}; // the thin ramp, with a roomy grip
+    w::SlideLook lk;
+    lk.bubble = std::to_wstring((int)std::lround(x.v * 100)) + L"%";
+    lk.ramp = true, lk.lo = Color{0, 0, 0, 1}, lk.hi = FromHsv({x.h, x.s, 1}); // the full range this handle's hue can take
+    if (Inside(row, input.mouse)) slideHot = true;
+    if (w::Slide(ui, t, id, row, v, lk)) {
         x.v = v;
         int hex = ToHex(FromHsv(x));
         handles[wheelPick] = x, handleFor[wheelPick] = hex;
-        StoreWheel(wheelPick, hex, false);
+        StoreWheel(wheelPick, hex, !ui.IsActive(id)); // a wheel notch is kept at once
     }
     if (ui.IsActive(id) && input.released) StoreWheel(wheelPick, WheelColor(wheelPick), true); // persist what the drag left
-    D2D1_POINT_2F k = {rail.left + Width(rail) * x.v, (r.top + r.bottom) / 2};
-    c.Dot(k, rad + 2, Color{1, 1, 1, 1});
-    c.Dot(k, rad - 1, FromHsv(x));
 }
 
 void Bar::SetChip(const Theme& t, const D2D1_RECT_F& r, int which, const wchar_t* name) { // a handle's color: tap to edit that one on the wheel
@@ -708,3 +720,5 @@ void Bar::SetChip(const Theme& t, const D2D1_RECT_F& r, int which, const wchar_t
     c.Text(on ? L"#" + HexText(WheelColor(which)) : std::wstring(name), {dot.x + rad - 1, r.top, r.right - 6, r.bottom}, Weight::Medium, 11, on ? t.text : t.textDim);
     if (h.clicked) wheelPick = which;
 }
+
+void setui::FreeWheel() { wheelBmp.Reset(), wheelOwner.Reset(); }

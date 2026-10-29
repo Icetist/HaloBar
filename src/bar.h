@@ -28,6 +28,7 @@
 #include "notifs.h"
 #include "apps.h"
 #include "calendar.h"
+#include "clips.h"
 #include "toggles.h"
 
 #include <unordered_set>
@@ -63,6 +64,8 @@ constexpr UINT WM_APP_PICK = WM_APP + 20; // the color picker finished: wparam 0
 constexpr UINT WM_APP_CAL = WM_APP + 15; // calendar events fetched
 constexpr UINT WM_APP_CALMENU = WM_APP + 16; // the connected calendars' menu, opened after the frame
 constexpr UINT WM_APP_RESTYLE = WM_APP + 13; // wparam 1: re-place too. a setting that rebuilds the device, applied after the frame that clicked it
+constexpr UINT WM_APP_CLIP = WM_APP + 27; // wparam: a clipboard picture whose files are written; lparam: a link's fetched title
+constexpr UINT WM_APP_CLIPTITLE = WM_APP + 28;
 constexpr UINT WM_APP_NOTIFS = WM_APP + 10; // lparam: a new std::vector<sys::Notif>*, read off the ui thread
 
 struct Swell { // soft light that rises from the floor and swells with the music, as on astraeus island's media page
@@ -138,7 +141,7 @@ public:
     static constexpr float kSheetW = 380; // and into an app's sheet
     static constexpr float kLaunchW = 800; // and into the apps menu
     static constexpr float kQsW = 460, kCalW = 720, kNotifW = 360; // and into quick settings, or the clock: notifications beside the calendar
-    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32;
+    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32, kClipPasteTimer = 33, kClipSaveTimer = 34;
     static constexpr UINT kTitleMs = 200; // title changes: at most five top bar frames a second
     static constexpr UINT kUpdateFirstMs = 60 * 1000, kUpdateEveryMs = 6 * 60 * 60 * 1000; // a minute after start, then a few times a day
     static constexpr UINT kCalWaitMs = 5 * 60 * 1000;
@@ -175,6 +178,7 @@ private:
     bool statsParked = false, shadeStale = false; // a tick or a screen read skipped while unseen: done as the dock comes back
     bool ScreensMoved() const; // a screen came or went since start, or a moon's own one moved
     static const std::vector<Bar*>& Docks(); // every dock, main one first
+    static bool AllAway(); // every screen's dock is behind a fullscreen app: the shared list, status and priority may rest
     Bar* lead = nullptr; // a moon's main dock: one window list, one song, one status read and one forecast for every screen
     sys::Media& Player() { return lead ? lead->media : media; }
     sys::Meter& Peaks() { return lead ? lead->meter : meter; }
@@ -224,6 +228,7 @@ private:
     void Arm(double seconds);
     bool Caret(); // a text field's blinking caret: shown now or not, with a frame booked for its next flip
     void Idle(); // still for a while: efficiency mode, caches handed back
+    void Trim(); // still for long, or a game in front: launcher icons, d2d's cache and idle pages go back
 
     int LookNow() const; // the look in use: 0 dark, 1 light, 2 glass, 3 island's custom
     float WegRadius() const { return kWegRadius; }
@@ -390,7 +395,46 @@ private:
     float galleryScroll = 0;
     void SyncWidgets(); // starts and stops what the widgets in the dock need, nothing for the rest
     void WidgetTick(); // the 2 s tick, only while a live widget is in sight
-    void OnClipboard2();
+    int OnClipboard2(); // bar_clip.cpp from here: 1 kept, 0 skipped, -1 the clipboard was busy
+    void OnClipDone(WPARAM id, LPARAM lp); // a picture's files written, or a link's title fetched
+    void SyncClip(); // the listener and the quick key, held by the main dock for every dock with the widget
+    void OpenClip(float x, bool setup);
+    void ClipClosed();
+    void ClipFilter(); // the shown list: the picked kind, what's typed; made again only when one of them or the history changed
+    void ClipPick(int at, bool plain); // onto the clipboard and, unless only copying, pasted into the app the panel was opened over
+    void ClipPaste();
+    void ClipPin(int at);
+    void ClipDrop(int at);
+    bool ClipKey(WPARAM vk, bool down);
+    void ClipChar(wchar_t ch);
+    void ClipThumb(clip::Item& it);
+    void ClipMenu();
+    ID2D1SolidColorBrush* ClipInk(Color c);
+    IDWriteTextLayout* ClipLayout(const clip::Item& it, const std::wstring& text, float w, float h, float size, const Theme& t, bool peek);
+    float ClipW() const;
+    float ClipRise() const;
+    void DrawClip(const Theme& t, const D2D1_RECT_F& r);
+    int DrawClipItems(const Theme& t, const D2D1_RECT_F& body);
+    void DrawClipRow(const Theme& t, const D2D1_RECT_F& r, clip::Item& it, int place);
+    void DrawClipCard(const Theme& t, const D2D1_RECT_F& r, clip::Item& it);
+    void DrawClipPeek(const Theme& t, const D2D1_RECT_F& body, clip::Item& it);
+    void DrawClipSetup(const Theme& t, const D2D1_RECT_F& area);
+    std::wstring clipQuery;
+    int clipTab = 0, clipSel = 0, clipMenuAt = -1, clipKeyOn = 0, clipShownTab = -1;
+    int clipCounts[8] = {}; // per kind tab
+    UINT clipPasteTries = 0;
+    int clipTries = 0; // the clipboard was busy: read again shortly, a few times
+    float clipScroll = 0, clipSetupScroll = 0, clipAnchor = 0; // clipAnchor: the widget's middle along the dock, where the quick key opens the panel
+    bool clipSetup = false, clipPeek = false, clipFollow = false, clipMenuUp = false, clipSlideHot = false;
+    HWND clipTarget = nullptr, clipPasteTo = nullptr; // the app the panel opened over; the one a paste is on its way to
+    std::vector<int> clipShown; // indices into the history, in the order shown
+    uint64_t clipShownVer = ~0ull, clipPeekId = 0, clipPeekImg = 0;
+    std::wstring clipShownQ;
+    D2D1_POINT_2F clipMouse{};
+    std::unordered_map<uint64_t, ComPtr<IDWriteTextLayout>> clipLays; // the grid's snippets, wrapped and coloured
+    ComPtr<IDWriteTextLayout> clipPeekLay;
+    ComPtr<ID2D1Bitmap> clipPeekBmp;
+    std::unordered_map<uint32_t, ComPtr<ID2D1SolidColorBrush>> clipInks;
     void OnPick(WPARAM rgb, LPARAM ok);
     void StepFocus();
     void LoadFiles(const std::wstring& dir);
@@ -403,7 +447,9 @@ private:
     std::vector<DriveRow> drives; // read when the drives widget opens or windows says a drive came or went
     void LoadDrives();
     static void Eject(wchar_t letter); // the shell's own eject: windows says when it's safe
-    bool Typing() const { return wgOpen && (wgKind == kWgNotes || wgKind == kWgTodo || wgKind == kWgHabit); } // a panel that takes the keyboard
+    static bool TypingKind(int k) { return k == kWgNotes || k == kWgTodo || k == kWgHabit || k == kWgClip; } // panels that take the keyboard
+    bool Typing() const { return wgOpen && TypingKind(wgKind); }
+    int wgShown = -1; // the widget panel showing as SetPanel last left it
     void WgChar(wchar_t ch);
     void SaveNote();
     void SaveLists();
@@ -420,16 +466,6 @@ private:
     sys::Wx wx;
     double focusEnd = 0, focusLeft = 0; // a running session ends at focusEnd; a paused one keeps focusLeft seconds
     int water = 0; // glasses today
-    struct Clip { // text, or an image kept compressed with a small preview; in memory only, never written anywhere
-        std::wstring text;
-        std::vector<BYTE> png;
-        UINT w = 0, h = 0;
-        ComPtr<IWICBitmap> pixels; // the preview, made once
-        ComPtr<ID2D1Bitmap> thumb; // and on the device, made when first drawn
-    };
-    std::vector<Clip> clips; // newest first
-    std::wstring ClipLine(const Clip& cl) const; // what a row says: the text's first line, or the image's size
-    void CopyClip(int i);
     bool clipListening = false;
     int pickHex = -1; // the last picked color
     struct FileRow {
@@ -511,6 +547,7 @@ private:
     void SetScreens(const Theme& t, const D2D1_RECT_F& r); // one screen or every screen, and which is the main one
     void SetPlace(const Theme& t, const D2D1_RECT_F& r); // a little monitor: tap where the dock goes, an edge or a spot along the bottom
     float setScroll = 0; // how far the settings sheet is scrolled, eased toward
+    bool slideHot = false; // the mouse sat on a slider last frame: the wheel steps it rather than scrolling the sheet
     void SetSong(const Theme& t, const D2D1_RECT_F& r);
     void SetClock(const Theme& t, const D2D1_RECT_F& r);
 
@@ -739,6 +776,7 @@ private:
     Theme shellFrom, shellTo, shellNow, mediaFrom, mediaTo, mediaNow; // from/to lerp into now
     float shellT = 1, mediaT = 1;
     std::wstring wallKey;
+    bool wallSeeded = false; // shellSeed came from the wallpaper at wallKey: an unchanged file isn't decoded again
 
     sys::Track track;
     bool hasTrack = false;

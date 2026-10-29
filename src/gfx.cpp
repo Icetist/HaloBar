@@ -389,6 +389,8 @@ constexpr uint32_t kLayTtl = 240; // frames a layout may sit unused before evict
 }
 
 ID2D1LinearGradientBrush* Canvas::Gradient(Color a, Color b, bool vertical, const D2D1_RECT_F& r) {
+    float m = (std::max)(a.a, b.a), op = 1; // a fade scales both alphas: kept as one opaque-most gradient and the brush's opacity, so a fading panel reuses one brush instead of a new gpu ramp per frame
+    if (m > 0.001f && m < 0.999f) a = a.Alpha(1 / m), b = b.Alpha(1 / m), op = m;
     uint64_t key = ColKey(a) | ColKey(b) << 32; // keyed by colors only, not rect
     key = Mix64(key, vertical ? 1 : 2);
     auto it = grads.find(key);
@@ -404,6 +406,7 @@ ID2D1LinearGradientBrush* Canvas::Gradient(Color a, Color b, bool vertical, cons
     }
     float sx = vertical ? 1 : Width(r), sy = vertical ? Height(r) : 1;
     it->second->SetTransform(D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(r.left, r.top)); // map unit gradient onto rect
+    it->second->SetOpacity(op);
     return it->second.Get();
 }
 

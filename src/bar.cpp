@@ -18,6 +18,7 @@
 #include "overflow.h"
 #include "popmenu.h"
 #include "rest.h"
+#include "setui.h"
 #include "taskbar.h"
 #include "version.h"
 
@@ -52,6 +53,9 @@ constexpr WORD kMaskKey = 0xE8; // unassigned: sent so a win + number never leav
 constexpr WPARAM kKeyNext = 100, kKeyBack = 101, kKeyTray = 102; // WM_APP_WINKEY past the numbers: win + t, shift + win + t, win + b
 constexpr WPARAM kTrayShowDesktop = 407; // the command explorer's taskbar runs for its show desktop corner
 constexpr UINT kIdleMs = 2500; // still this long: efficiency mode
+constexpr UINT_PTR kTrimTimer = 92; // still for longer: memory handed back to windows
+constexpr UINT kTrimMs = 30000; // a wake after a short pause doesn't fault every page back in; a long one gives them up
+constexpr double kBusyFps = 60; // springs and fades: smooth at 60, and a 240 hz screen doesn't quadruple the cost
 constexpr int kDevTries = 30; // ~3 seconds of retries, 100 ms apart
 constexpr UINT kDevRetryMs = 2000; // after that, a calm retry until the gpu answers again
 constexpr float kThemeSec = 0.8f; // palette crossfade, as island's
@@ -120,6 +124,8 @@ Bar::~Bar() {
     if (HMODULE u = GetModuleHandleW(L"user32.dll"); u && taskmanWas && IsWindow(taskmanWas)) // explorer answers for minimizing windows again
         if (auto set = reinterpret_cast<BOOL(WINAPI*)(HWND)>(GetProcAddress(u, "SetTaskmanWindow"))) set(taskmanWas);
     if (clipListening && hwnd) RemoveClipboardFormatListener(hwnd);
+    if (clipKeyOn && hwnd) UnregisterHotKey(hwnd, 0x4842);
+    if (!lead && clip::History().dirty) clip::History().Save(); // the last copies' index, written before leaving
     if (hwnd && !moon) HaloIcon(false);
     if (keyHook) UnhookWindowsHookEx(keyHook), keyHook = nullptr;
     if (keyBar == this) keyBar = nullptr;
@@ -419,13 +425,26 @@ void Bar::SetFull(bool on) {
     if (on == full) return;
     full = on;
     ShowWindow(hwnd, on ? SW_HIDE : SW_SHOWNOACTIVATE); // games and videos get the whole screen
+    bool away = AllAway();
+    SetThreadPriority(GetCurrentThread(), away ? THREAD_PRIORITY_BELOW_NORMAL : THREAD_PRIORITY_ABOVE_NORMAL); // one thread for every screen: a game's threads come first only once no dock is in use
+    if (tasks) tasks->Pause(away); // the list is shared: a dock on a screen without the game still needs every window event
+    if (on && moveHook) UnhookWinEvent(moveHook), moveHook = nullptr; // the game's own cursor and moves: nothing to follow
+    if (on) needsFrame = false, CancelWaitableTimer(frameWait), KillTimer(hwnd, kIdleTimer), SetTimer(hwnd, kTrimTimer, kIdleMs, nullptr); // nothing drawn while away: memory back soon
     if (on) SetCoalescableTimer(hwnd, kFullTimer, kFullMs, nullptr, 1000); // the shell's "it's over" can go missing: never stay hidden on its word alone; a window event looks sooner
     else KillTimer(hwnd, kFullTimer);
     if (!on) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         BelowIsland();
+        PollStatus(); // the status skipped its ticks while away
+        OnCoverEvent(nullptr, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), OBJID_WINDOW, CHILDID_SELF, 0, 0); // follows the app in front again
         Redraw();
     }
+}
+
+bool Bar::AllAway() {
+    for (Bar* b : Docks())
+        if (!b->full) return false;
+    return true;
 }
 
 bool Bar::FullInFront() const {
@@ -545,7 +564,9 @@ void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG 
         DWORD pid = 0;
         GetWindowThreadProcessId(h, &pid);
         if (pid == GetCurrentProcessId()) pid = 0;
-        if (pid != movePid || !moveHook) { // another window of the same app: the hook already follows it
+        bool away = std::any_of(coverBars.begin(), coverBars.end(), [](Bar* b) { return b->full; });
+        if (away) pid = 0; // a fullscreen game in front: its moves are never followed
+        if (pid != movePid || (!moveHook && pid)) { // another window of the same app: the hook already follows it
             if (moveHook) UnhookWinEvent(moveHook), moveHook = nullptr;
             movePid = pid;
             if (pid) moveHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr, OnCoverEvent, pid, 0, WINEVENT_OUTOFCONTEXT);
@@ -799,11 +820,15 @@ void Bar::SetPanel(Panel p) {
     sheetOpen = p == Panel::Sheet;
     qsOpen = p == Panel::Quick;
     calOpen = p == Panel::Calendar;
-    bool launchWas = launchOpen, noteWas = Typing();
+    bool launchWas = launchOpen, noteWas = wgOpen && TypingKind(wgShown);
+    int shownWas = wgShown;
     launchOpen = p == Panel::Launch;
     wgOpen = p == Panel::Widget;
+    wgShown = wgOpen ? wgKind : -1;
     if (!wgOpen || wgKind != kWgGallery) editing = false, dragSlot = -1; // edit mode lasts as long as its gallery
-    if (noteWas && !Typing()) SaveNote(), draft.clear(); // the note is written as it closes
+    if (shownWas == kWgNotes && wgShown != kWgNotes && noteLoaded) SaveNote(); // the note is written as it closes
+    if (noteWas && !Typing()) draft.clear();
+    if (shownWas == kWgClip && wgShown != kWgClip) ClipClosed();
     if (p == Panel::None && updateReady) PostQuitMessage(2); // an update waited for the panel to close
     if (trayOpen && !trayWas) SyncGhosts(); // the icons explorer kept, read fresh as the tray opens
     if (calOpen && !calWas) cals.Sync(hwnd, WM_APP_CAL, sys::cal::Calendars::kOnOpen), calPick = 0; // opening it shows changes made a minute ago; today picked
@@ -918,7 +943,9 @@ void Bar::FreeDev() {
     mixIcons.clear();
     appBmps.clear();
     for (Ghost& gh : ghosts) gh.bmp.Reset(); // bitmaps belong to the old device: remade from their pixels on the new one
-    for (Clip& cl : clips) cl.thumb.Reset();
+    setui::FreeWheel();
+    clip::History().DropPixels(); // the clipboard panel's previews and coloured text belong to the old device
+    clipLays.clear(), clipInks.clear(), clipPeekLay.Reset(), clipPeekBmp.Reset(), clipPeekId = clipPeekImg = 0;
     customBmps.clear();
     haloLogo.Reset();
     for (FileRow& f : files) f.icon.Reset();
@@ -962,8 +989,10 @@ bool Bar::Caret() {
 
 void Bar::Redraw() {
     fullNext = allNext = true;
+    if (full) return; // behind a fullscreen app nothing shows: the frame that brings the dock back draws it all
     if (eco) sys::SetEco(eco = false);
     KillTimer(hwnd, kIdleTimer);
+    KillTimer(hwnd, kTrimTimer);
     needsFrame = true;
     Arm(0);
 }
@@ -979,8 +1008,21 @@ void Bar::Idle() {
         if (dev) dev->ClearResources(0);
         gfx::Settle(d3d.Get());
     }
-    gfx::GiveBack();
     if (!eco && !barsOnly) sys::SetEco(eco = true); // the bars keep their beat at full priority
+    if (!barsOnly) SetCoalescableTimer(hwnd, kTrimTimer, kTrimMs, nullptr, 5000); // still for a good while: then memory goes back
+}
+
+void Bar::Trim() { // long idle, or a game in front: caches and pages back to windows
+    if (AnyOpen()) return;
+    if (!launchOpen) appBmps.clear(), appIcons.clear(), appIcons.shrink_to_fit(), appIconsDone = false; // the launcher reads them again as it opens
+    mixIcons.clear();
+    if (ctx) {
+        ComPtr<ID2D1Device> dev;
+        ctx->GetDevice(&dev);
+        if (dev) dev->ClearResources(0);
+        gfx::Settle(d3d.Get()); // the driver's own scratch too
+    }
+    gfx::GiveBack();
 }
 
 int Bar::LookNow() const {
@@ -1000,8 +1042,11 @@ void Bar::SyncLook() {
     look = prefs::IslandLook();
     bool follow = cfg.accent == prefs::Settings::kFollow; // island's accent: its own color, the wallpaper's, or the bar's pick
     bool fixed = follow ? look.accentFixed : cfg.accent == 1;
-    if (fixed) shellSeed = theme::FromCol(Color::Rgb((uint32_t)(follow ? look.accentHex : cfg.accentHex)));
-    else wallKey.clear(), SyncWall(); // read the wallpaper again even if it didn't change
+    if (fixed) shellSeed = theme::FromCol(Color::Rgb((uint32_t)(follow ? look.accentHex : cfg.accentHex))), wallSeeded = false;
+    else {
+        if (!wallSeeded) wallKey.clear(); // back from a fixed accent: the wallpaper's seed again, even if the file didn't change
+        SyncWall(); // the same file as last time is not decoded again: an island setting change costs nothing here
+    }
     SetShell(Make(shellSeed));
     if (coverTint) SetMedia(Make(mediaSeed));
 }
@@ -1017,10 +1062,19 @@ bool Bar::SyncWall() {
     ComPtr<IWICBitmapSource> src = gfx::DecodeFile(path.c_str(), 256); // a small decode is enough for a palette
     if (!src) return false;
     shellSeed = theme::FromBmp(src.Get());
+    wallSeeded = true;
     return true;
 }
 
+namespace {
+bool SameTheme(const Theme& a, const Theme& b) { return memcmp(&a, &b, offsetof(Theme, glass)) == 0 && a.glass == b.glass; } // colors are plain floats: no padding before glass
+}
+
 void Bar::SetShell(const Theme& t) {
+    if (SameTheme(t, shellTo)) { // nothing really changed: no crossfade, no frames
+        if (!coverTint) SetMedia(t);
+        return;
+    }
     shellFrom = shellNow;
     shellTo = t;
     shellT = 0;
@@ -1028,6 +1082,7 @@ void Bar::SetShell(const Theme& t) {
 }
 
 void Bar::SetMedia(const Theme& t) {
+    if (SameTheme(t, mediaTo)) return;
     mediaFrom = mediaNow;
     mediaTo = t;
     mediaT = 0;
@@ -1138,6 +1193,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEACTIVATE:
         return passFor.empty() && !launchOpen && !Typing() ? MA_NOACTIVATE : MA_ACTIVATE; // clicks never steal focus from the user's app, except while a password is typed here
     case WM_CHAR:
+        if (wgOpen && wgKind == kWgClip) { // the clipboard's search
+            ClipChar((wchar_t)wp);
+            return 0;
+        }
         if (Typing()) { // into the note, a to-do or a habit
             WgChar((wchar_t)wp);
             return 0;
@@ -1156,7 +1215,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE && dockKey >= 0) dockKey = -1, keyBack = nullptr, Redraw(); // clicked away: the keyboard left the dock
-        if (LOWORD(wp) == WA_INACTIVE && (launchOpen || Typing())) SetPanel(Panel::None); // clicked away: the launcher goes, as start does
+        if (LOWORD(wp) == WA_INACTIVE && (launchOpen || Typing()) && !clipMenuUp) SetPanel(Panel::None); // clicked away: the launcher goes, as start does
         if (LOWORD(wp) == WA_INACTIVE && !passFor.empty()) { // clicked away mid-password: drop it rather than hold the keyboard
             if (!pass.empty()) SecureZeroMemory(pass.data(), pass.size() * sizeof(wchar_t));
             pass.clear();
@@ -1262,7 +1321,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (notifPolling) SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500);
             break;
         case kAppsTimer:
-            LoadApps(true); // a while after start, in the background: the launcher opens with every icon already there
+            LoadApps(false); // a while after start, in the background: names for search; icons only once the launcher opens, so they don't sit in memory
             break;
         case kNotifReadTimer:
             LoadNotifs();
@@ -1340,7 +1399,14 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case kClipTimer:
             OnClipboard(); // a calendar link being waited for
-            OnClipboard2(); // the clipboard widget's history
+            if (OnClipboard2() < 0 && ++clipTries < 5) SetTimer(hwnd, kClipTimer, kClipSettleMs, nullptr); // the copying app still holds it: a little later
+            else clipTries = 0;
+            break;
+        case kClipPasteTimer:
+            ClipPaste();
+            break;
+        case kClipSaveTimer:
+            if (clip::History().dirty) clip::History().Save();
             break;
         case kShadeTimer:
             KillTimer(hwnd, kShadeTimer);
@@ -1383,6 +1449,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         }
         case kIdleTimer: Idle(); break;
+        case kTrimTimer: Trim(); break;
         case kDevTimer: Redraw(); break;
         case kHideTimer:
             if (!moon) taskbar::Hide();
@@ -1402,11 +1469,15 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             PostQuitMessage(2); // every screen's docks made afresh, windows' taskbar kept hidden meanwhile
             break;
         case kStatusTimer: {
+            if (AllAway()) { // every screen behind a game: no reads at all, the poller and its drives stay asleep; SetFull(false) catches up
+                SetCoalescableTimer(hwnd, kStatusTimer, kStatusMs, nullptr, 1000);
+                break;
+            }
             PollStatus();
             radios.Recheck(); // throttled inside, and nothing once both radios are known
             if (HasWg(kWgWeather)) RefreshWx(); // cached for half an hour: fetches only when that's up
             if (HasWg(kWgPhoto) && shadeTick % 360 == 0) PickPhoto(); // another picture each hour
-            if (HasWg(kWgFiles) && shadeTick % 6 == 0 && !(wgOpen && wgKind == kWgFiles)) LoadFiles(L""); // the newest download, each minute
+            if (HasWg(kWgFiles) && shadeTick % 6 == 0 && !(wgOpen && wgKind == kWgFiles) && !Hidden()) LoadFiles(L""); // the newest download, each minute
             if (++shadeTick % 3 == 0) SampleShade(); // a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
             BelowIsland(); // astraeus may have started since: its hover strip goes back over the top bar
             if (auto was = promoted; SyncPromoted(), promoted != was) Redraw(); // an icon moved in or out of the taskbar in windows' settings
@@ -1477,7 +1548,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         SyncPromoted();
         if (overflowUp) overflow::Place(); // explorer re-centers it when it grows or shrinks
         int shown = HiddenCount();
-        if (trayOpen || (!promoted.empty() && !Unseen()) || promoted != was || (shown > 0) != (trayShown > 0)) Redraw(); // an app animating its icon costs nothing unless it's in sight, or the button comes or goes
+        if (trayOpen || (!Hidden() && (!promoted.empty() || promoted != was || (shown > 0) != (trayShown > 0)))) Redraw(); // tucked or behind a game: the next frame back draws them // an app animating its icon costs nothing unless it's in sight, or the button comes or goes
         trayShown = shown;
         return 0;
     }
@@ -1491,6 +1562,26 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_CALMENU:
         CalMenu();
         return 0;
+    case WM_HOTKEY: // the clipboard's quick key, from any app
+        if (wp == 0x4842) {
+            if (full) break; // a fullscreen game keeps the screen
+            if (wgOpen && wgKind == kWgClip) SetPanel(Panel::None);
+            else OpenClip(clipAnchor > 0 ? clipAnchor : W / 2, false);
+        }
+        return 0;
+    case WM_APP_CLIP:
+        OnClipDone(wp, 0);
+        return 0;
+    case WM_APP_CLIPTITLE:
+        OnClipDone(0, lp);
+        return 0;
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP:
+        if (ClipKey(wp, msg == WM_SYSKEYDOWN)) return 0;
+        break;
+    case WM_KEYUP:
+        if (ClipKey(wp, false)) return 0;
+        return 0;
     case WM_CLIPBOARDUPDATE:
         SetTimer(hwnd, kClipTimer, kClipSettleMs, nullptr); // read once the copying app is done with it; a burst of updates reads once
         return 0;
@@ -1502,6 +1593,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnApps(wp, lp);
         return 0;
     case WM_KEYDOWN:
+        if (ClipKey(wp, true)) return 0;
         if (dockKey >= 0) DockKey(wp);
         else if (launchOpen && (wp == VK_LEFT || wp == VK_RIGHT || wp == VK_UP || wp == VK_DOWN || wp == VK_ESCAPE || wp == VK_RETURN)) LaunchKey(wp);
         return 0;
@@ -1548,7 +1640,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnMedia();
         return 0;
     case WM_APP_MENU: // wparam: 0 the power user menu, 1 power, 2 the recycle bin
-        wp == 1 ? ShowPowerMenu() : wp == 2 ? BinMenu() : wp == 3 ? ShowUserMenu() : wp == 4 ? AppMenu() : ShowMenu();
+        wp == 1 ? ShowPowerMenu() : wp == 2 ? BinMenu() : wp == 3 ? ShowUserMenu() : wp == 4 ? AppMenu() : wp == 5 ? ClipMenu() : ShowMenu();
         BelowIsland(); // a menu brings its owner to the front: astraeus goes back on top
         return 0;
     case WM_WINDOWPOSCHANGED: // something raised the bar (a menu, the shell, our own topmost call): astraeus' strip goes back on top
@@ -1710,6 +1802,10 @@ void Bar::DrawCard(const Theme& t, ID2D1Geometry* shape) { // the open dropdown,
 }
 
 void Bar::Frame() {
+    if (full) { // hidden behind a fullscreen app: no frames until it's gone
+        needsFrame = false;
+        return;
+    }
     double now = Seconds();
     float dt = lastFrame > 0 ? (float)(std::min)(now - lastFrame, 0.05) : 1 / 60.0f; // clamp so a stall doesn't jump the springs
     lastFrame = now;
@@ -1817,7 +1913,7 @@ void Bar::Frame() {
         }
         TrimSurface(keep, n);
     }
-    if (drawTop || drawBot) SyncMask(), Present(); // the blur follows the capsules, the dock and the panel, in the same batch as the frame; nothing drawn, nothing to commit
+    if (drawTop || drawBot) SyncMask(), Present();
     if (statsParked && !StatsUnseen()) statsParked = false, SetTimer(hwnd, kStatsTimer, 1, nullptr); // back in sight: the numbers tick again at once
     devTries = 0; // a frame made it to the screen
     Census(0xF0005, (drawTop ? 1 : 0) | (drawBot ? 2 : 0)); // which passes a full frame drew
@@ -1849,7 +1945,8 @@ void Bar::Frame() {
     barsOnly = !busy && !ui.Ambient() && barsMoving; // nothing but the little bars: caches can still be handed back
     if (barsOnly && !wasBarsOnly) SetTimer(hwnd, kIdleTimer, kIdleMs, nullptr); // armed once: re-arming every frame pushed it back forever
     UINT smooth = (UINT)(std::max)(1L, std::lround(hz / 60)); // the open player's wave and light read as smooth at 60, not every refresh of a fast screen
-    if (needsFrame) Arm((busy ? 1.0 : mediaOpen ? smooth : ambientSync) / hz);
+    UINT busySync = (UINT)(std::max)(1L, std::lround(hz / kBusyFps));
+    if (needsFrame) Arm((busy ? (input.down ? 1u : busySync) : mediaOpen ? smooth : ambientSync) / hz); // a drag follows the mouse at the screen's own rate
     else SetTimer(hwnd, kIdleTimer, kIdleMs, nullptr);
     if (spectrum && now - spectrumAsked > 3) spectrum.reset(); // the player closed: capture stops
 }

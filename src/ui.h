@@ -95,5 +95,14 @@ void Spark(Canvas& c, const D2D1_RECT_F& r, const std::vector<float>& values, ui
                Color line, bool flip = false);
 bool Chip(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, const std::wstring& label, bool selected);
 bool Switch(Ui& ui, const Theme& t, uint32_t id, D2D1_POINT_2F c, bool on, bool enabled = true); // 46x26 toggle
+struct SlideLook {
+    std::wstring bubble; // what the bubble over the thumb says while it's held
+    float step = 0.05f; // one wheel notch
+    bool ramp = false; // the track shows a range of colors, lo to hi, instead of the accent fill
+    Color lo, hi;
+};
+// settings' slider: a tall target, a track that thickens and a thumb that grows under the mouse, the shown value easing to the real one,
+// a bubble with the value while held; a press jumps there, a drag follows, the wheel steps. r is the whole row; true when value changed
+bool Slide(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, float& value, const SlideLook& look);
 std::wstring Pct(float v);
 }

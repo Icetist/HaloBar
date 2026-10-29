@@ -24,9 +24,6 @@
 namespace {
 
 constexpr int kFilesMax = 12; // downloads and folder items shown
-constexpr size_t kClipMax = 12; // entries the clipboard history keeps
-constexpr int kClipImages = 4; // of them images: each is a few hundred kilobytes even compressed
-constexpr float kClipThumb = 24; // a preview's height in dips
 constexpr float kXSize = 15; // edit mode's remove badge
 constexpr float kDragStart = 6; // dips moved before a press is a drag
 
@@ -98,107 +95,6 @@ void WriteUtf8(const std::wstring& path, const std::wstring& text) {
     DWORD w = 0;
     WriteFile(f, u.data(), (DWORD)u.size(), &w, nullptr);
     CloseHandle(f);
-}
-
-std::vector<BYTE> Png(IWICBitmapSource* src) { // kept compressed: a screenshot is a few hundred kilobytes, not tens of megabytes
-    std::vector<BYTE> out;
-    ComPtr<IStream> st;
-    ComPtr<IWICBitmapEncoder> enc;
-    ComPtr<IWICBitmapFrameEncode> fr;
-    UINT w = 0, h = 0;
-    WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
-    if (!gfx::Wic() || FAILED(src->GetSize(&w, &h)) || FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &st)) || FAILED(gfx::Wic()->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) ||
-        FAILED(enc->Initialize(st.Get(), WICBitmapEncoderNoCache)) || FAILED(enc->CreateNewFrame(&fr, nullptr)) || FAILED(fr->Initialize(nullptr)) || FAILED(fr->SetSize(w, h)) ||
-        FAILED(fr->SetPixelFormat(&fmt)) || FAILED(fr->WriteSource(src, nullptr)) || FAILED(fr->Commit()) || FAILED(enc->Commit()))
-        return out;
-    STATSTG ss{};
-    if (FAILED(st->Stat(&ss, STATFLAG_NONAME))) return out;
-    out.resize((size_t)ss.cbSize.QuadPart);
-    LARGE_INTEGER zero{};
-    ULONG got = 0;
-    if (FAILED(st->Seek(zero, STREAM_SEEK_SET, nullptr)) || FAILED(st->Read(out.data(), (ULONG)out.size(), &got))) got = 0;
-    out.resize(got);
-    return out;
-}
-
-ComPtr<IWICBitmap> Thumb(IWICBitmapSource* src, UINT px) { // the list's preview, scaled once
-    UINT w = 0, h = 0;
-    if (FAILED(src->GetSize(&w, &h)) || !w || !h) return nullptr;
-    UINT th = (std::min)(px, h), tw = (std::clamp)((UINT)((uint64_t)w * th / h), 1u, 4 * px); // a panorama is cut short, not a sliver
-    ComPtr<IWICBitmapScaler> sc;
-    ComPtr<IWICFormatConverter> conv;
-    ComPtr<IWICBitmap> out;
-    if (FAILED(gfx::Wic()->CreateBitmapScaler(&sc)) || FAILED(sc->Initialize(src, tw, th, WICBitmapInterpolationModeFant)) || FAILED(gfx::Wic()->CreateFormatConverter(&conv)) ||
-        FAILED(conv->Initialize(sc.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) ||
-        FAILED(gfx::Wic()->CreateBitmapFromSource(conv.Get(), WICBitmapCacheOnLoad, &out)))
-        return nullptr;
-    return out;
-}
-
-bool PutImage(HWND hwnd, const std::vector<BYTE>& png) { // back on the clipboard as a dib every app reads, and as png for those that keep transparency
-    ComPtr<IWICStream> st;
-    ComPtr<IWICBitmapDecoder> dec;
-    ComPtr<IWICBitmapFrameDecode> fr;
-    ComPtr<IWICFormatConverter> conv;
-    UINT w = 0, h = 0;
-    if (png.empty() || !gfx::Wic() || FAILED(gfx::Wic()->CreateStream(&st)) || FAILED(st->InitializeFromMemory(const_cast<BYTE*>(png.data()), (DWORD)png.size())) ||
-        FAILED(gfx::Wic()->CreateDecoderFromStream(st.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &dec)) || FAILED(dec->GetFrame(0, &fr)) ||
-        FAILED(gfx::Wic()->CreateFormatConverter(&conv)) || FAILED(conv->Initialize(fr.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) ||
-        FAILED(conv->GetSize(&w, &h)))
-        return false;
-    UINT stride = w * 4;
-    size_t bytes = (size_t)stride * h;
-    HGLOBAL dib = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + bytes);
-    if (!dib) return false;
-    auto* bi = static_cast<BITMAPINFOHEADER*>(GlobalLock(dib));
-    *bi = {sizeof(BITMAPINFOHEADER), (LONG)w, (LONG)h, 1, 32, BI_RGB, (DWORD)bytes};
-    BYTE* px = reinterpret_cast<BYTE*>(bi + 1);
-    bool ok = true;
-    for (UINT y = 0; y < h && ok; ++y) {
-        WICRect row = {0, (INT)(h - 1 - y), (INT)w, 1}; // a dib runs bottom up
-        ok = SUCCEEDED(conv->CopyPixels(&row, stride, stride, px + (size_t)y * stride));
-    }
-    GlobalUnlock(dib);
-    HGLOBAL raw = ok ? GlobalAlloc(GMEM_MOVEABLE, png.size()) : nullptr;
-    if (raw) memcpy(GlobalLock(raw), png.data(), png.size()), GlobalUnlock(raw);
-    if (!ok || !OpenClipboard(hwnd)) {
-        GlobalFree(dib);
-        if (raw) GlobalFree(raw);
-        return false;
-    }
-    EmptyClipboard();
-    if (!SetClipboardData(CF_DIB, dib)) GlobalFree(dib);
-    static const UINT kPng = RegisterClipboardFormatW(L"PNG");
-    if (raw && !SetClipboardData(kPng, raw)) GlobalFree(raw);
-    CloseClipboard();
-    return true;
-}
-
-bool PutText(HWND hwnd, const std::wstring& s) {
-    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (s.size() + 1) * sizeof(wchar_t));
-    if (!g) return false;
-    memcpy(GlobalLock(g), s.c_str(), (s.size() + 1) * sizeof(wchar_t));
-    GlobalUnlock(g);
-    if (!OpenClipboard(hwnd)) return GlobalFree(g), false;
-    EmptyClipboard();
-    if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g);
-    CloseClipboard();
-    return true;
-}
-
-bool PrivateClip() { // password managers mark what they copy: never kept
-    static const UINT kExclude = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
-    static const UINT kHistory = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
-    static const UINT kIgnore = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
-    if (IsClipboardFormatAvailable(kExclude) || IsClipboardFormatAvailable(kIgnore)) return true;
-    if (IsClipboardFormatAvailable(kHistory))
-        if (HANDLE h = GetClipboardData(kHistory)) {
-            const DWORD* v = static_cast<const DWORD*>(GlobalLock(h));
-            bool no = v && *v == 0;
-            GlobalUnlock(h);
-            return no;
-        }
-    return false;
 }
 
 }
@@ -281,12 +177,7 @@ void Bar::SaveSlots() {
 void Bar::SyncWidgets() {
     std::fill(std::begin(fitW), std::end(fitW), 0.0f); // a widget added or resized: measured afresh
     SyncFit();
-    bool clip = HasWg(kWgClip);
-    if (clip != clipListening) {
-        clipListening = clip;
-        if (clip) AddClipboardFormatListener(hwnd);
-        else if (!calWaiting) RemoveClipboardFormatListener(hwnd), clips.clear(); // off: the history goes with it
-    }
+    SyncClip(); // the history loads, listens and takes its quick key only while the widget is in a dock
     if (HasWg(kWgStats) && !statSrc && !statMaking) { // opening the performance counters can take seconds: never on the ui thread
         statMaking = true;
         std::thread([h = hwnd] {
@@ -360,48 +251,6 @@ void Bar::WidgetTick() { // every 2 s, only while the dock or a panel shows: uns
 }
 
 // ---- the sources ----
-
-void Bar::OnClipboard2() {
-    if (!clipListening || GetClipboardOwner() == hwnd || !OpenClipboard(hwnd)) return; // our own copy back: it's at the top already
-    Clip got;
-    ComPtr<IWICBitmap> image;
-    if (!PrivateClip()) {
-        if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) { // text wins: a spreadsheet's cells come with a picture of them too
-            if (const wchar_t* p = static_cast<const wchar_t*>(GlobalLock(h))) {
-                got.text.assign(p, wcsnlen(p, 4096)); // a long copy is kept by its start
-                GlobalUnlock(h);
-            }
-        } else if (HBITMAP bm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP)); bm && gfx::Wic()) {
-            gfx::Wic()->CreateBitmapFromHBITMAP(bm, nullptr, WICBitmapIgnoreAlpha, &image); // copied out while the clipboard is still open
-        }
-    }
-    CloseClipboard();
-    if (image) {
-        got.png = Png(image.Get()); // compressed here, once
-        if (got.png.empty()) return;
-        image->GetSize(&got.w, &got.h);
-        got.pixels = Thumb(image.Get(), (UINT)std::lround(kClipThumb * scale));
-    } else if (got.text.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
-        return;
-    }
-    clips.erase(std::remove_if(clips.begin(), clips.end(), [&](const Clip& c) { return c.text == got.text && c.png == got.png; }), clips.end()); // copied again: it moves to the top
-    clips.insert(clips.begin(), std::move(got));
-    int images = 0;
-    for (auto it = clips.begin(); it != clips.end();) it = !it->png.empty() && ++images > kClipImages ? clips.erase(it) : it + 1; // only the newest few pictures
-    if (clips.size() > kClipMax) clips.resize(kClipMax);
-    Redraw(); // the medium face shows the newest
-}
-
-std::wstring Bar::ClipLine(const Clip& cl) const {
-    if (cl.png.empty()) return cl.text.substr(0, cl.text.find_first_of(L"\r\n"));
-    return L"Image  \u00b7  " + std::to_wstring(cl.w) + L" \u00d7 " + std::to_wstring(cl.h);
-}
-
-void Bar::CopyClip(int i) { // back onto the clipboard, ready to paste, and to the top of the list
-    if (i < 0 || i >= (int)clips.size()) return;
-    bool ok = clips[(size_t)i].png.empty() ? PutText(hwnd, clips[(size_t)i].text) : PutImage(hwnd, clips[(size_t)i].png);
-    if (ok) std::rotate(clips.begin(), clips.begin() + i, clips.begin() + i + 1);
-}
 
 void Bar::OnPick(WPARAM rgb, LPARAM ok) {
     if (ok) pickHex = (int)(rgb & 0xFFFFFF), Redraw(); // the picker copied its hex already

@@ -343,6 +343,49 @@ bool Switch(Ui& ui, const Theme& t, uint32_t id, D2D1_POINT_2F c, bool on, bool 
     return h.clicked;
 }
 
+bool Slide(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, float& value, const SlideLook& look) {
+    constexpr float kTrack = 6, kTrackHot = 9; // the track's thickness at rest, and under the mouse
+    constexpr float kThumb = 8, kThumbHot = 10.5f, kThumbHeld = 12; // the thumb's radius at rest, hovered, held
+    constexpr float kBubbleH = 24, kBubbleGap = 8; // the value's bubble, and its gap above the thumb
+    float inset = kThumbHeld + 2; // the thumb never leaves the row, even at its ends
+    D2D1_RECT_F rail = {r.left + inset, r.top, r.right - inset, r.bottom};
+    bool changed = ui.Slider(id, rail, value, false); // a press anywhere on the row jumps there, then follows
+    bool held = ui.IsActive(id);
+    if (float n = ui.Wheel(r); n != 0) value = anim::Clamp01(value + n * look.step), changed = true;
+    bool hot = held || Inside(r, ui.In().mouse);
+    float hov = ui.Smooth(id + 1, hot ? 1.0f : 0, 16), hold = ui.Smooth(id + 2, held ? 1.0f : 0, 18);
+    float shown = ui.Smooth(id + 3, value, held ? 34.0f : 13.0f); // tight while pulled, a soft glide for a click or a wheel
+    Canvas& c = ui.C();
+    float cy = (r.top + r.bottom) / 2, th = kTrack + (kTrackHot - kTrack) * hov, x = rail.left + Width(rail) * shown;
+    D2D1_RECT_F track = {rail.left, cy - th / 2, rail.right, cy + th / 2};
+    if (look.ramp) {
+        c.FillH(track, th / 2, look.lo, look.hi); // the range itself is the picture
+    } else {
+        c.Fill(track, th / 2, t.track.Mix(t.text.Alpha(0.16f), 0.35f * hov));
+        if (x > track.left + 0.5f) c.Fill({track.left, track.top, (std::max)(x, track.left + th), track.bottom}, th / 2, t.accent); // solid, as every picked control in settings
+    }
+    float rad = kThumb + (kThumbHot - kThumb) * hov + (kThumbHeld - kThumbHot) * hold;
+    if (hov > 0.01f) c.Dot({x, cy}, rad + 6 + 2 * hold, t.accent.Alpha(0.16f * hov)); // a halo says it's live
+    if (look.ramp) {
+        c.Dot({x, cy}, rad, Color{1, 1, 1, 1});
+        c.Dot({x, cy}, rad - 3, look.lo.Mix(look.hi, shown));
+    } else {
+        c.Dot({x, cy + 1}, rad, Color{0, 0, 0, 0.22f}); // lifts off the track
+        c.Dot({x, cy}, rad, t.accent);
+        c.Dot({x, cy}, (std::max)(2.5f, rad * 0.32f), t.onAccent); // a pip, so it reads on any accent
+    }
+    if (hold > 0.01f && !look.bubble.empty()) { // the value rides over the thumb while it's held
+        constexpr float kCharW = 7.2f; // the bubble's digits, roughly: no measuring for a few characters
+        float bw = (std::max)(kBubbleH * 1.6f, kCharW * (float)look.bubble.size() + 16);
+        float by = cy - rad - kBubbleGap - kBubbleH + 4 * (1 - hold);
+        D2D1_RECT_F b = {x - bw / 2, by, x + bw / 2, by + kBubbleH};
+        c.Fill(b, kBubbleH / 2, t.accent.Alpha(hold));
+        c.Dot({x, b.bottom + 1}, 3, t.accent.Alpha(hold)); // a small tail toward the thumb
+        c.Text(look.bubble, b, Weight::Semi, 11.5f, t.onAccent.Alpha(hold), Align::Center);
+    }
+    return changed;
+}
+
 std::wstring Pct(float v) {
     return std::to_wstring((int)std::lround(anim::Clamp01(v) * 100)) + L"%"; // round, not truncate
 }
