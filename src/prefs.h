@@ -4,7 +4,7 @@
 namespace prefs {
 
 struct Look { // astraeus island's appearance, so the two read as one desktop
-    int look = 0; // 0 dark, 1 light, 2 glass, 3 custom
+    int look = 0; // 0 dark, 1 light, 2 glass, 3 custom, 5 starfall
     bool accentFixed = false; // false: the accent comes from the wallpaper
     int accentHex = 0xB8C4FF;
     int customBg = 0x121826;

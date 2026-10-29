@@ -9,6 +9,7 @@ namespace {
 constexpr wchar_t kIslandKey[] = L"Software\\Astraeus"; // astraeus island's settings root, read only
 constexpr wchar_t kBarKey[] = L"Software\\HaloBar"; // the bar's own settings, per user
 constexpr wchar_t kOldBarKey[] = L"Software\\AstraeusBar"; // the name before halobar, moved over once
+constexpr int kIslandStarfall = 5; // island's own starfall look: worn here only by following it, never offered as the bar's pick
 HKEY watched = nullptr; // island's key, held open while its change notification is armed
 
 int Read(const wchar_t* key, const wchar_t* name, int fallback) {
@@ -55,7 +56,7 @@ Look IslandLook() {
     l.look = Read(kIslandKey, L"Appearance", 0);
     l.followsBar = l.look == 4;
     if (!l.followsBar) l.bgOpacity = (std::clamp)(Read(kIslandKey, L"BgOpacity", 100), Settings::kMinOpacity, 100); // clamped as island clamps it; 4 follows the bar back: the default ends the loop
-    if (l.look < 0 || l.look > 3) l.look = 0; // a look this build doesn't know: the default one
+    if (l.look < 0 || (l.look > 3 && l.look != kIslandStarfall)) l.look = 0; // a look this build doesn't know, or 4 (following us): the default one
     l.accentFixed = Read(kIslandKey, L"AccentMode", 0) == 1;
     l.accentHex = Read(kIslandKey, L"AccentHex", l.accentHex) & 0xFFFFFF; // rgb only, any stray alpha byte dropped
     l.customBg = Read(kIslandKey, L"CustomBg", l.customBg) & 0xFFFFFF;

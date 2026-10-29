@@ -11,6 +11,7 @@
 #include <cwctype>
 
 #include "glyphs.h"
+#include "starfall.h"
 #include "overflow.h"
 #include "popmenu.h"
 
@@ -45,6 +46,7 @@ void Bar::PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float s
     bool rim = !only || !Within(*only, r, radius + rimW / 2, rimW + kAa); // and the outline can't reach it (its inner edge: inset by its width, the curve by half): not drawn at all
     float fr = flat ? 0 : radius;
     c.Fill(r, fr, Body(t)); // the solid looks at the opacity setting
+    if (t.stars) starfall::Sky(c, r, radius, t, skyT, Body(t).a, 1, nullptr, 1, skyDrift); // island's starfall; its orb moves only while this bar is hovered
     if (t.glass) {
         if (shade > 0.01f) c.Fill(r, fr, Color{0.02f, 0.02f, 0.04f, 0.45f * shade}); // smoked over a white page, so the ink still reads
         c.FillV(r, fr, t.sheen, t.sheen.Alpha(0));
@@ -384,6 +386,7 @@ void Bar::DrawToolbar(const Theme& t) {
     Canvas& c = ui.C();
     capL = barR;
     c.Fill(barR, 0, Body(t)); // edge to edge, in island's material
+    if (t.stars) starfall::Sky(c, barR, 0, t, skyT, Body(t).a, 0, nullptr, 1, skyDrift);
     if (t.glass) {
         if (shadeTopNow > 0.01f) c.Fill(barR, 0, Color{0.02f, 0.02f, 0.04f, 0.45f * shadeTopNow}); // smoked over a white page
         c.FillV(barR, 0, t.sheen, t.sheen.Alpha(0));

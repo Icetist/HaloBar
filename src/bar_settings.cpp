@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "glyphs.h"
+#include "starfall.h"
 #include "setui.h"
 #include "version.h"
 
@@ -352,6 +353,7 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
             c.FillV(q, 6, th.cardHi, th.bg.Alpha(1)); // opaque: the swatch shows the material, not what's behind the bar
             c.Fill(Rect(q.left, q.top, sw, 8), 0, th.bg.Alpha(1).Mix(th.text, 0.06f)); // a little toolbar along its top
             c.Fill(Rect(q.left + sw * 0.25f, q.bottom - 14, sw * 0.5f, 8), 3, th.bg.Alpha(1).Mix(th.text, 0.12f)); // and a little dock
+            if (th.stars) starfall::Sky(c, q, 6, th, 0, 1, 1, nullptr, 6); // island's starfall, a denser field to read at swatch size
             c.Dot({q.left + sw / 2, q.top + 4}, 2, th.accent);
             c.StrokeV(q, 6, th.hairTop, th.hairBot, 1);
         }

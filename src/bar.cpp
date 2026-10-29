@@ -19,6 +19,7 @@
 #include "popmenu.h"
 #include "rest.h"
 #include "setui.h"
+#include "starfall.h"
 #include "taskbar.h"
 #include "version.h"
 
@@ -37,6 +38,8 @@ Bar* keyBar = nullptr; // the dock the keyboard hook speaks for: the main one
 constexpr UINT kReserveSettleMs = 700; // explorer's taskbar takes a moment to really give up its strip once it auto-hides
 constexpr UINT kStatusMs = 10000; // network, battery and volume in the row: windows doesn't tell us, so a slow look
 constexpr UINT kRescanMs = 40; // a burst of window events lands in one walk of the windows
+constexpr float kOrbFps = 20; // starfall's orb: frames per second while it's the only thing moving
+constexpr float kOrbWrap = 100000; // seconds of drift before its clock wraps: float keeps ~10 ms precision that far
 constexpr UINT kHoverMs = 260, kCloseMs = 420; // song: rest on it to open the player; leave the island this long to close what's open
 constexpr UINT kSetCloseMs = 1400; // settings forgive a longer trip outside
 constexpr UINT_PTR kHideTimer = 90; // explorer's taskbar came back in a burst: hide it once more after a pause
@@ -944,6 +947,7 @@ void Bar::FreeDev() {
     appBmps.clear();
     for (Ghost& gh : ghosts) gh.bmp.Reset(); // bitmaps belong to the old device: remade from their pixels on the new one
     setui::FreeWheel();
+    starfall::Forget(); // the sky's gradients belong to the old device
     clip::History().DropPixels(); // the clipboard panel's previews and coloured text belong to the old device
     clipLays.clear(), clipInks.clear(), clipPeekLay.Reset(), clipPeekBmp.Reset(), clipPeekId = clipPeekImg = 0;
     customBmps.clear();
@@ -1818,7 +1822,10 @@ void Bar::Frame() {
     bool themes = StepTheme(dt);
     bool springs = StepSprings(dt);
     bool easing = Layout(dt); // the toolbar's, the dock's and a dropdown's bounds for this frame, known before anything is drawn
-    bool fullFrame = fullNext || springs || themes || easing || Inside(mediaR, input.mouse) || !mediaCalm || AnyOpen() || card.Shown(); // the fast frames repaint only a dock at rest: a fading hover, a panel's or a card's shadow over the dock would show as a lighter square
+    skyDrift = shellNow.stars && !look.reduceMotion; // starfall's orb: frozen where it is unless a bar is hovered or a dropdown hangs open
+    bool orbTopLive = skyDrift && (Inside(drawnTop, input.mouse) || (AnyOpen() && cardDown));
+    bool orbBotLive = skyDrift && (Inside(drawnBottom, input.mouse) || Inside(wegHit, input.mouse) || (AnyOpen() && !cardDown));
+    bool fullFrame = fullNext || springs || themes || easing || Inside(mediaR, input.mouse) || !mediaCalm || AnyOpen() || card.Shown() || orbTopLive || orbBotLive; // the fast frames repaint only a dock at rest: a fading hover, a panel's or a card's shadow over the dock would show as a lighter square
 
     const Theme& t = shellNow;
     if (!fullFrame) { // only the toolbar's little bars could have moved: step them first, and draw nothing at all if no bar moved by half a pixel
@@ -1832,6 +1839,7 @@ void Bar::Frame() {
             return;
         }
         canvas->NewFrame();
+        skyT = orbBot;
         D2D1_RECT_F area = Inset(barsRect, -2, -3), reach = Inset(area, -1 / scale, -1 / scale); // the pass rounds out to whole pixels
         bool ok = Pass(area, [&] { // only the bars' own square: the plate, the pill's tint, the bars; cover and text stay as drawn
             if (Vert()) canvas->Glow({cfg.edge == 1 ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // the column's shadow, as DrawWegCol lays it
@@ -1865,6 +1873,8 @@ void Bar::Frame() {
     bool onTop = Inside(top, input.mouse), onBot = Inside(bottom, input.mouse) || Inside(wegHit, input.mouse);
     bool drawTop = allNext || topAsk || themes || topLive || onTop || overTop || (cardDown && cardMoves) || easing || !Same(top, drawnTop);
     bool drawBot = allNext || themes || botLive || onBot || overBot || (!cardDown && cardMoves) || easing || dragging || !Same(bottom, drawnBottom);
+    if (orbTopLive) orbTop = std::fmod(orbTop + dt, kOrbWrap), drawTop = true; // the orb moved: its bar repaints
+    if (orbBotLive) orbBot = std::fmod(orbBot + dt, kOrbWrap), drawBot = true;
     if (top.right <= top.left && drawnTop.right <= drawnTop.left) drawTop = topLive = false; // nothing there and nothing left over: the pass would only clear clear pixels (the top bar is retired, so most frames)
     if (bottom.right <= bottom.left && drawnBottom.right <= drawnBottom.left) drawBot = botLive = false; // the dock tucked away and already wiped
     overTop = onTop, overBot = onBot;
@@ -1872,6 +1882,7 @@ void Bar::Frame() {
     barsMoving = StepBars(dt, now); // the song's little bars, stepped once whichever pass draws them
     ui.Begin(*canvas, input, dt, now);
     bool ok = true;
+    skyT = orbTop;
     if (drawTop) ok = Pass(topDirty, [&] {
         DrawToolbar(t);
         if (cardDown) DrawCard(t, shape.Get());
@@ -1881,6 +1892,7 @@ void Bar::Frame() {
     if (drawTop) topLive = tb || ta;
     ui.Quiet();
     if (drawBot) tipNow = {}, trayAt.clear(); // the dock's pass names whatever is hovered again, and places the tray icons again
+    skyT = orbBot;
     if (!drawBot) ui.KeepHits(Union(drawnBottom, wegHit));
     else ok = ok && Pass(botDirty, [&] {
         DrawWeg(t);
@@ -1940,13 +1952,15 @@ void Bar::Frame() {
     bool asked = needsFrame; // a click during the frame asked for another (the player opening, say)
     bool busy = springs || themes || easing || ui.Busy() || asked;
     bool ambient = ui.Ambient() || barsMoving;    fullNext = fullNext || busy || ui.Ambient(); // only the toolbar's bars can ride on a partial frame
-    needsFrame = busy || ambient;
+    bool orbing = orbTopLive || orbBotLive; // hovered or open: the orb keeps drifting, ~20 fps when nothing else moves
+    needsFrame = busy || ambient || orbing;
     bool wasBarsOnly = barsOnly;
     barsOnly = !busy && !ui.Ambient() && barsMoving; // nothing but the little bars: caches can still be handed back
     if (barsOnly && !wasBarsOnly) SetTimer(hwnd, kIdleTimer, kIdleMs, nullptr); // armed once: re-arming every frame pushed it back forever
     UINT smooth = (UINT)(std::max)(1L, std::lround(hz / 60)); // the open player's wave and light read as smooth at 60, not every refresh of a fast screen
     UINT busySync = (UINT)(std::max)(1L, std::lround(hz / kBusyFps));
-    if (needsFrame) Arm((busy ? (input.down ? 1u : busySync) : mediaOpen ? smooth : ambientSync) / hz); // a drag follows the mouse at the screen's own rate
+    UINT orbSync = (UINT)(std::max)((long)ambientSync, std::lround(hz / kOrbFps));
+    if (needsFrame) Arm((busy ? (input.down ? 1u : busySync) : mediaOpen ? smooth : ambient ? ambientSync : orbSync) / hz); // a drag follows the mouse at the screen's own rate
     else SetTimer(hwnd, kIdleTimer, kIdleMs, nullptr);
     if (spectrum && now - spectrumAsked > 3) spectrum.reset(); // the player closed: capture stops
 }

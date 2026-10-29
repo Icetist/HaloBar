@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <windows.h>
 #include <d3d11.h>
 #include <dcomp.h>
@@ -790,6 +790,9 @@ private:
     double quietSince = -1; // playing yet silent since then: maybe the sound moved to another output
     float barsDrawn[4] = {}; // as last put on screen: a frame that wouldn't move them is skipped
     bool barsMoving = false;
+    float orbTop = 1, orbBot = 1; // starfall's orb: seconds of drift each bar has had; it moves only while that bar is hovered or a dropdown hangs from it
+    float skyT = 0; // the drift time of the pass being drawn, handed to the sky
+    bool skyDrift = false; // starfall and motion allowed: the bloom sits where its drift time puts it
     float preview = -1; // seek drag preview, -1 = none
     Swell swell;
 

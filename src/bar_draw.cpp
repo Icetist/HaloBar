@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "glyphs.h"
+#include "starfall.h"
 #include "overflow.h"
 
 #include <psapi.h>
@@ -167,6 +168,7 @@ void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // a panel: island'
     if (!shape) return;
     Canvas& c = *canvas;
     c.FillGeometry(shape, Body(t)); // the dock's opacity, so a panel reads as part of it
+    if (t.stars) starfall::Sky(c, pill, 0, t, skyT, Body(t).a, 1, shape, 1, skyDrift); // island's starfall: its orb drifts while the dropdown is open
     if (!t.glass) return;
     if (glassShade > 0.01f) c.FillGeometry(shape, Color{0.02f, 0.02f, 0.04f, 0.45f * glassShade}); // smoked over a white page
     D2D1_RECT_F o = pill; // island's glass: gloss from the top, a bright rim

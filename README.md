@@ -36,7 +36,7 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 - **Widgets, picked from a gallery.** Now playing, weather, system stats, clipboard, notes, calendar, focus timer and about twenty more, in small, medium and large, dragged wherever you like in edit mode.
 - **A clipboard that keeps up.** Fuzzy search, pins, tabs for text, code, links, files, media and colours, code highlighting, colour swatches in any notation, tracking-free links and paste straight into the app you came from.
 - **Quick settings and notifications.** Wi-Fi, Bluetooth, volume, brightness and a dozen toggles, joining networks and pairing devices in place, with your notifications beside a month view.
-- **Your look.** Astraeus' themes (Dark, Light, Glass or Custom), opacity and blur sliders, three sizes, a dock on every screen and any edge.
+- **Your look.** Astraeus' themes (Dark, Light, Glass or Custom, plus Astraeus' own Starfall when following it), opacity and blur sliders, three sizes, a dock on every screen and any edge.
 - **Out of a game's way.** A fullscreen game gets its screen to itself, while the docks on your other screens keep working.
 
 <details>
@@ -54,7 +54,7 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 - **Media.** The playing song with a small visualizer; click it for a player with album art, shuffle and repeat, and pause right from the dock. In a side dock the song becomes a tall pill with its title turned sideways and the visualizer at its end. With Astraeus running, click the album art for Astraeus' fullscreen player with lyrics; close it and you're back in the player.
 - **Launcher.** Click the Windows logo to search every installed app, with your pins, power options and Windows Start one click away. **All apps** lists everything the way Start does, under letters, with folders that open in place.
 - **Menus in HaloBar's style.** Right-click an app, the Windows logo or the recycle bin for a menu with icons, a header and submenus, in your theme.
-- **Your look.** Astraeus' themes: follow Astraeus, or pick Dark, Light, Glass or Custom with your own accent and background. On the solid looks an opacity slider lets the desktop show through the dock and its panels, on glass a blur slider; following Astraeus, both are Astraeus' own. Compact, normal or large.
+- **Your look.** Astraeus' themes: follow Astraeus (Starfall included, with its violet glow drifting while you hover), or pick Dark, Light, Glass or Custom with your own accent and background. On the solid looks an opacity slider lets the desktop show through the dock and its panels, on glass a blur slider; following Astraeus, both are Astraeus' own. Compact, normal or large.
 - **Every screen, any edge.** A dock on every screen, or on the one you pick from a little map of your monitors. Put it at the bottom (centered, from the left or from the right) or on the left or right edge; it moves there live, without the Windows taskbar flashing up in between.
 - **Windows' taskbar, any time.** One button in settings hands the taskbar back to Windows; HaloBar waits as a tray icon whose little dashboard brings it back.
 - **Updates itself** and **starts with Windows.** New releases install silently once their SHA-256 matches the one published with them.
