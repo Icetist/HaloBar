@@ -11,6 +11,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/Icetist/HaloBar/release.yml?style=flat-square&label=build)](https://github.com/Icetist/HaloBar/actions/workflows/release.yml)
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D4?style=flat-square&logo=windows)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus)
+![License](https://img.shields.io/badge/license-GPL--3.0-9F8CFF?style=flat-square)
 
 [Features](#-features) •
 [Screenshots](#-screenshots) •
@@ -165,3 +166,7 @@ Yes. HaloBar puts a dock on every screen, as Windows does. In settings, **Screen
 - [Outfit](https://github.com/Outfitio/Outfit-Fonts) by the Outfit Project Authors, licensed under the [SIL Open Font License 1.1](./LICENSES/Outfit-OFL.txt).
 - [Material Symbols](https://github.com/google/material-design-icons) by Google, licensed under the [Apache License 2.0](./LICENSES/MaterialSymbols-Apache-2.0.txt).
 - Weather from [Open-Meteo](https://open-meteo.com).
+
+## 📄 License
+
+Copyright (C) 2026 Icetist. Licensed under the [GNU General Public License v3.0](./LICENSE): you may use, change and share it, and anything you share that is built on it must stay open under the same license.
