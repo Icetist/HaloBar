@@ -576,8 +576,8 @@ void Bar::SetAdvanced(const Theme& t, const D2D1_RECT_F& head) { // island's adv
         }
         if (i == kPlayerCard) {
             float sy = in.top + cd.n * kLineH + 2;
-            if (artBg) slider(in, sy, "set.artalpha", L"Background strength", &Bar::artAlpha, prefs::kArtAlphaMin, prefs::kArtAlphaMax, prefs::kMediaArtAlpha);
-            else c.Text(L"Background strength: album art off", Rect(in.left, sy, Width(in), kAdvSlideLabelH), Weight::Light, 10.5f, t.textLow); // nothing to strengthen
+            if (artBg) slider(in, sy, "set.vizalpha", L"Visualizer opacity", &Bar::vizAlpha, prefs::kVizAlphaMin, prefs::kVizAlphaMax, prefs::kVizAlpha);
+            else c.Text(L"Visualizer opacity: album art off", Rect(in.left, sy, Width(in), kAdvSlideLabelH), Weight::Light, 10.5f, t.textLow); // it only sits over the art
             slider(in, sy + kAdvSlideRowH, "set.vizgain", L"Visualizer sensitivity", &Bar::vizGain, prefs::kVizGainMin, prefs::kVizGainMax, prefs::kVizGain);
         }
         rowH = (std::max)(rowH, h2);

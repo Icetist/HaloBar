@@ -24,6 +24,7 @@
 #include "gfx.h"
 #include "icons.h"
 #include "media.h"
+#include "desk.h"
 #include "mixer.h"
 #include "notifs.h"
 #include "apps.h"
@@ -81,6 +82,7 @@ void Keys(std::initializer_list<WORD> keys); // bar_quick.cpp: a windows shortcu
 int WifiGlyph(const sys::Status& s);
 int BatteryGlyph(const sys::Status& s);
 int VolumeGlyph(float level, bool muted);
+bool TheDeskIdle(); // no mixer groups for this app to apply: the sessions can go
 
 class Bar {
 public:
@@ -346,8 +348,17 @@ private:
     void DrawQuick(const Theme& t, ID2D1Geometry* shape);
     void QuickMain(const Theme& t, const D2D1_RECT_F& r);
     void QuickList(const Theme& t, const D2D1_RECT_F& r);
-    float MixRows(const Theme& t, const D2D1_RECT_F& r, float y, int rows); // every app's own volume, under the outputs
-    int MixFit() const;
+    float MixRows(const Theme& t, const D2D1_RECT_F& r, float y); // the mixer under the outputs: mic, groups, apps, chat mix
+    float MixHeight() const; // what it wants, inside what the panel leaves it
+    float MixList(const Theme& t, const D2D1_RECT_F& r, float y); // the rows, returns where they end
+    bool MixLine(const Theme& t, const D2D1_RECT_F& row, uint32_t id, const sys::MixApp* app, int glyph, Color tint, const std::wstring& name, float& v, bool muted, float peak, bool& tap); // icon, name, slider, meter
+    void MixEditor(const Theme& t, const D2D1_RECT_F& r); // one group's name, color, icon, output, chat side and ducking
+    void MixOptions(const Theme& t, const D2D1_RECT_F& r); // ducking depth, shortcuts, profiles
+    void DeskTick(float dt, bool fast); // the main dock applies the shared mixer setup, unless astraeus does
+    void DeskSave(); // an edit: stored for astraeus too, applied at once
+    void DeskKey(int k); // a mixer shortcut
+    void SyncDesk(); // its timer and shortcuts, only while something needs them
+    void CommitMixName();
     D2D1_RECT_F lastTile{}; // the quick tile just drawn, for a badge over its icon
     void BeginPass(const sys::WifiNet& n); // a password field under that network; the bar takes the keyboard while it's typed
     void EndPass(); // the field goes, its text wiped, the keyboard handed back
@@ -695,7 +706,17 @@ private:
     std::wstring wheelApp; // the app whose own volume the wheel last turned, and when: its ring shows a moment
     double wheelAt = -10;
     float wheelVol = 0;
-    sys::Mixer mixer; // per-app volume: holds nothing until its page or a wheel over an app needs it
+    sys::Mixer mixer; // per-app volume: holds nothing until its page, a wheel over an app or a mixer group needs it
+    std::vector<sys::OutDev> mics; // input choices, read while the sound page shows
+    std::wstring micId;
+    std::vector<uint8_t> mixUnfold = std::vector<uint8_t>(sys::Desk::kMaxGroups); // a group shows its apps
+    int mixEdit = -1, mixName = -1; // the group being edited, and whose name is being typed
+    std::wstring mixNameEdit;
+    bool mixOpts = false; // the options card instead of the rows
+    float mixScroll = 0;
+    UINT mixTimerMs = 0; // the mixer timer's period now, 0 stopped
+    int mixTicks = 0;
+    bool mixKeys = false;
     std::unordered_map<std::wstring, ComPtr<ID2D1Bitmap>> mixIcons; // each app's icon on the mixer page, made once per device
     std::unique_ptr<sys::AudioDev> spk, mic;
     sys::Status status;
@@ -794,7 +815,7 @@ private:
     ComPtr<ID2D1Bitmap> coverBlur;
     ComPtr<ID2D1Bitmap> coverBg; // the player's full-bleed backdrop, blurred far harder: baked once per cover, only while artBg is on
     bool artBg = false; // "album art background", shared with astraeus as MediaArtBg
-    int artAlpha = prefs::kArtAlphaDef, vizGain = prefs::kVizGainDef; // its strength and the visualizer's sensitivity, percent, shared too
+    int vizAlpha = prefs::kVizAlphaDef, vizGain = prefs::kVizGainDef; // the visualizer's opacity over the art and its sensitivity, percent, shared too
     float bars[4] = {}; // the row's mini visualizer, eased per frame
     bool mediaCalm = false; // the song's pill was last drawn at rest: only then may the bars' fast frames repaint their square
     double quietSince = -1; // playing yet silent since then: maybe the sound moved to another output

@@ -118,7 +118,7 @@ void Bar::DrawDock(const Theme& t) { // the apps in the dock: wegX and wegS (Dra
                 mixer.SetVolume(key, v);
                 wheelApp = a.key, wheelAt = ui.Now(), wheelVol = v;
             }
-            if (!(qsOpen && qsPage == 4)) ::SetTimer(hwnd, kMixCloseTimer, 3000, nullptr); // let the sessions go once the scrolling stops
+            if (!(qsOpen && qsPage == 3)) ::SetTimer(hwnd, kMixCloseTimer, 3000, nullptr); // let the sessions go once the scrolling stops
         }
         if (wheelApp == a.key && ui.Now() - wheelAt < 1.4) { // its level as a ring around it, for a moment
             float k = anim::Clamp01((float)(1.4 - (ui.Now() - wheelAt)) / 0.3f); // fades over its last 0.3 s

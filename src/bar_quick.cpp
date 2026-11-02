@@ -17,7 +17,7 @@ constexpr float kPad = 16, kTileH = 74, kGapY = 8, kPillH = 40, kFootH = 40; // 
 constexpr int kQsCols = 4, kQsTiles = 14, kQsCommon = 8; // the first eight always show, the rest behind "more"
 constexpr float kQsSetW = 140; // the named settings button in the footer
 constexpr float kMoreH = 26; // windows' own set, four across
-constexpr float kListHead = 52, kListRow = 40, kListFoot = 44, kMixRow = 50, kMixHead = 26; // a mixer row: the app's name over its own slider
+constexpr float kListHead = 52, kListRow = 40, kListFoot = 44; // a list page: its head, a row, its foot
 constexpr int kListRows = 6; // networks, devices or outputs shown at once; the rest are in settings
 constexpr float kCalHead = 40, kCalDow = 22, kCalCell = 34, kCalFoot = 44; // month title, weekday initials, one day, today's date
 constexpr float kCalAgenda = 112; // the picked day's events, under the month: a head and three rows
@@ -228,7 +228,7 @@ float Bar::QuickRise() const {
     // the grid page: tiles, more, volume, brightness (none on desktops), footer
     if (qsPage == 0) return kPad + rows * (kTileH + kGapY) - 4 + kMoreH + kPillH + (brightPct >= 0 ? kPillH + 6 : 0) + 6 + kFootH + 10;
     size_t n = qsPage == 1 ? nets.size() : qsPage == 2 ? devs.size() : outs.size(); // a list page grows with its rows, up to kListRows
-    if (qsPage == 3) return kListHead + (float)(std::min)(n, (size_t)kListRows) * kListRow + kMixHead + (float)MixFit() * kMixRow + kListFoot + 8;
+    if (qsPage == 3) return kListHead + (float)(std::min)(n, (size_t)kListRows) * kListRow + MixHeight() + kListFoot + 8;
     if (qsPage == 1 && !passFor.empty()) n += 1; // room for the password field
     return kListHead + (float)(std::min)(n, (size_t)kListRows) * kListRow + kListFoot + 8;
 }
@@ -250,15 +250,11 @@ void Bar::OpenQuickPage(int page) {
         bt.Scan(false); // discovery drains batteries and slows the radio: off as soon as the page goes
         bt.Close();
     }
-    if (page == 3) outs = sys::ListOuts(outId); // also fills in which one is the default
-    if (page == 3) { // outputs and, under them, every app's own level
-        mixer.Open(); // sessions read now and once a second while it shows
-        SetTimer(hwnd, kMixTimer, 1000, nullptr);
-    } else if (mixer.IsOpen()) {
-        KillTimer(hwnd, kMixTimer);
-        mixer.Close();
-        mixIcons.clear(); // their device bitmaps, made again next time
-    }
+    if (page == 3) outs = sys::ListOuts(outId), mics = sys::ListIns(micId); // also fills in which ones are the defaults
+    if (page == 3) mixer.Open(); // outputs and, under them, the mixer: sessions read now, meters ten times a second while it shows
+    else mixEdit = mixName = -1, mixOpts = false;
+    if (page != 3 && mixer.IsOpen() && (moon || TheDeskIdle())) mixer.Close(), mixIcons.clear(); // their device bitmaps, made again next time; groups keep the sessions
+    SyncDesk();
     Redraw();
 }
 
@@ -422,41 +418,6 @@ void Bar::SubmitPass() {
     EndPass();
 }
 
-float Bar::MixRows(const Theme& t, const D2D1_RECT_F& r, float y, int rows) {
-    Canvas& c = ui.C();
-    c.Text(L"APPS", Rect(r.left + 2, y + 6, 100, 12), Weight::Medium, 9.5f, t.textLow);
-    std::wstring dev = mixer.Device();
-    if (!dev.empty()) c.Text(dev, Rect(r.left + 60, y + 4, Width(r) - 60, 14), Weight::Light, 10.5f, t.textLow, Align::Right); // whose sessions these are
-    y += kMixHead;
-    const auto& apps = mixer.Apps();
-    if (apps.empty()) c.Text(L"Nothing is making sound", Rect(r.left, y + 14, Width(r), 18), Weight::Light, 12.5f, t.textLow, Align::Center);
-    for (int i = 0; i < (int)apps.size() && i < rows; ++i) {
-        const auto& a = apps[i];
-        float cy = y + kMixRow / 2;
-        D2D1_RECT_F ic = Rect(r.left + 2, cy - 12, 24, 24);
-        ComPtr<ID2D1Bitmap>& bmp = mixIcons[a.key]; // made once per session, kept while the page shows
-        if (!bmp && a.icon && ctx) {
-            D2D1_BITMAP_PROPERTIES bp = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-            ctx->CreateBitmap({32, 32}, a.icon->data(), 32 * 4, bp, &bmp); // the mixer reads every icon at 32 px, premultiplied
-        }
-        if (bmp) c.Image(bmp.Get(), ic, 0, a.muted ? 0.4f : 1);
-        else c.Icon(a.key == L"system" ? glyph::Bell : glyph::Speaker, {ic.left + 12, cy}, 19, t.textDim); // system sounds have no exe to take an icon from
-        c.Text(a.name, Rect(r.left + 36, y + 2, Width(r) - 90, 15), Weight::Medium, 11.5f, a.playing ? t.text : t.textDim);
-        float v = a.volume;
-        bool tap = false;
-        if (w::Pill(ui, t, Ui::Id("qs.mixv", i), Rect(r.left + 36, y + 19, Width(r) - 36, 26), VolumeGlyph(v, a.muted), v, &tap, a.muted)) mixer.SetVolume(a.key, v);
-        if (tap) mixer.SetMuted(a.key, !a.muted);
-        y += kMixRow;
-    }
-    return y + (apps.empty() ? kMixRow : 0); // the empty note takes a row's room
-}
-
-int Bar::MixFit() const { // as many app rows as fit under the outputs in the window's room
-    float room = kRoom - kRowH - 40 - (kListHead + (float)(std::min)(outs.size(), (size_t)kListRows) * kListRow + kMixHead + kListFoot + 8);
-    int fit = (std::max)(1, (int)(room / kMixRow)); // at least one, even when the room is tight
-    return (std::clamp)((int)mixer.Apps().size(), 1, fit);
-}
-
 void Bar::QuickList(const Theme& t, const D2D1_RECT_F& r) {
     Canvas& c = ui.C();
     static const wchar_t* const kTitles[] = {L"", L"Wi-Fi", L"Bluetooth", L"Sound"}; // by qsPage; 0 is the grid, never a list
@@ -545,7 +506,7 @@ void Bar::QuickList(const Theme& t, const D2D1_RECT_F& r) {
                 Peaks().Refresh(); // and the visualizer listens to it
             }
         }
-        y = MixRows(t, r, y, MixFit()); // and every app's own level, island's mixer
+        y = MixRows(t, r, y); // and the mixer: groups, apps, chat mix
         more = L"Sound settings", moreUri = L"ms-settings:sound";
     }
     D2D1_RECT_F foot = Rect(r.left - 6, r.bottom - 34, Width(r) + 12, 32);

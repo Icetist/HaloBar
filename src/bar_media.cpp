@@ -11,7 +11,6 @@ constexpr int kBlobs = 5; // a few big soft blobs across the player, as on islan
 constexpr double kQuietRebindSec = 2.5; // a song this long without a sound is listened for on the default output again
 constexpr WPARAM kIslandStage = 110; // astraeus' host opens its fullscreen player on this command
 constexpr float kArtBgSigma = 3; // album art background: just softened, the cover clearly itself; the default look is already a color wash
-constexpr float kArtBgViz = 0.7f; // the music's glow over the cover: faint, the art is the show
 constexpr float kArtBgDim = 0.18f, kArtBgVeilTop = 0.08f, kArtBgVeilBot = 0.55f; // clear at the top, deeper under the row; white text still holds on a white cover
 
 std::wstring Clock(double seconds) {
@@ -210,7 +209,7 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
     // the whole island takes on the song: its blurred cover and the music's light, kept inside the shape
     rt->PushLayer(D2D1::LayerParameters(pill, shape), nullptr);
     if (artBg && coverBg) { // album art background: the cover edge to edge, at full strength
-        c.Image(coverBg.Get(), pill, 0, a * artAlpha / 100.0f); // its strength slider, shared with astraeus
+        c.Image(coverBg.Get(), pill, 0, a);
         c.Fill(pill, 0, Color{0, 0, 0, kArtBgDim * a}); // darker first, whatever the cover
         c.FillV(pill, 0, t.veil.Alpha(kArtBgVeilTop * a), t.veil.Alpha(kArtBgVeilBot * a)); // then the look's own veil: the text keeps its contrast in light looks too
     } else if (coverBlur) {
@@ -220,7 +219,7 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
     if (StepSwell(ui.Dt(), hasTrack && track.playing)) {
         ui.KeepAlive(); // animate until fully faded
         bool faint = artBg && coverBg;
-        if (faint) rt->PushLayer(D2D1::LayerParameters(pill, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), kArtBgViz), nullptr);
+        if (faint) rt->PushLayer(D2D1::LayerParameters(pill, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), vizAlpha / 100.0f), nullptr);
         DrawSwell(Rect(pill.left, pill.top, Width(pill), rowTop - pill.top), t, ui.Now());
         if (faint) rt->PopLayer();
     }

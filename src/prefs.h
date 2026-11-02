@@ -58,11 +58,11 @@ int ReadNum(const wchar_t* name, int fallback);
 int ReadShared(const wchar_t* name, int fallback); // what halobar and astraeus share, under astraeus' key: do not disturb
 void SaveShared(const wchar_t* name, int value);
 inline constexpr wchar_t kMediaArtBg[] = L"MediaArtBg"; // shared: the player's album art as its whole background, 0 or 1
-inline constexpr wchar_t kMediaArtAlpha[] = L"MediaArtAlpha"; // shared: that background's strength, percent
+inline constexpr wchar_t kVizAlpha[] = L"VizAlpha"; // shared: the visualizer's opacity over that background, percent
 inline constexpr wchar_t kVizGain[] = L"VizGain"; // shared: how hard the visualizer reacts, percent
-inline constexpr int kArtAlphaMin = 20, kArtAlphaMax = 100, kArtAlphaDef = 100;
+inline constexpr int kVizAlphaMin = 10, kVizAlphaMax = 100, kVizAlphaDef = 60;
 inline constexpr int kVizGainMin = 50, kVizGainMax = 200, kVizGainDef = 100;
-inline int ArtAlpha() { return (std::clamp)(ReadShared(kMediaArtAlpha, kArtAlphaDef), kArtAlphaMin, kArtAlphaMax); } // astraeus clamps the same
+inline int VizAlpha() { return (std::clamp)(ReadShared(kVizAlpha, kVizAlphaDef), kVizAlphaMin, kVizAlphaMax); } // astraeus clamps the same
 inline int VizGain() { return (std::clamp)(ReadShared(kVizGain, kVizGainDef), kVizGainMin, kVizGainMax); }
 void SaveNum(const wchar_t* name, int value);
 void Delete(const wchar_t* name);

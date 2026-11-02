@@ -22,6 +22,7 @@ constexpr int ClearDay = 0xF157, ClearNight = 0xF159, PartlyDay = 0xF172, Partly
 constexpr int Cloud = 0xE2BD, Fog = 0xE818, Rain = 0xF176, Snow = 0xE2CD, Storm = 0xEBDB;
 constexpr int BtConn = 0xE1A8, BtSearch = 0xE1AA, Devices = 0xE1B1; // bluetooth center
 constexpr int Keys = 0xE312, Mouse = 0xE323, Phone = 0xE32C, Pc = 0xE30A, Pad = 0xEA28, Watch = 0xE334;
+constexpr int Chat = 0xE311, Movie = 0xE02C, Web = 0xE80B, Work = 0xE8F9; // the mixer's groups
 constexpr int Delete = 0xE872, Add = 0xE145, Close = 0xE5CD, OpenNew = 0xE89E;
 constexpr int Sparkle = 0xE65F, Edit = 0xE3C9, Rocket = 0xEB9B; // tray menu
 constexpr int kSys = 0x10000; // above the bmp: a codepoint in windows' segoe fluent icons instead of our subset

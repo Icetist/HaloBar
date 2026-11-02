@@ -194,7 +194,7 @@ bool Bar::Create(HINSTANCE instance) {
     if (!lead) media.Start(hwnd, WM_APP_MEDIA); // one session watcher: a moon shows the main dock's song
     if (!lead) prefsEv = prefs::WatchIsland(), pinsEv = pins::Watch(); // watched once: the main dock passes changes on
     artBg = prefs::ReadShared(prefs::kMediaArtBg, 0) != 0;
-    artAlpha = prefs::ArtAlpha(), vizGain = prefs::VizGain();
+    vizAlpha = prefs::VizAlpha(), vizGain = prefs::VizGain();
     SyncLook();
     SyncUser(); // the toolbar's user module
     SyncDesktops();
@@ -1150,7 +1150,7 @@ void Bar::OnPrefs() {
         if (!moon) Banners(cfg.pills || q);
     }
     SetArtBg(prefs::ReadShared(prefs::kMediaArtBg, 0) != 0); // flipped in astraeus
-    artAlpha = prefs::ArtAlpha(), vizGain = prefs::VizGain(); // its sliders too; the redraw below shows them
+    vizAlpha = prefs::VizAlpha(), vizGain = prefs::VizGain(); // its sliders too; the redraw below shows them
     bool glassNow = glass != nullptr;
     SyncLook();
     if (ctx && (LookNow() == 2) != glassNow) FreeDev(); // island went into or out of glass, and the bar follows it
@@ -1214,6 +1214,15 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (launchOpen) {
             if (wp != VK_RETURN && wp != VK_ESCAPE) LaunchChar((wchar_t)wp);
+            return 0;
+        }
+        if (mixName >= 0) { // a mixer group's name
+            if (wp == VK_RETURN) CommitMixName();
+            else if (wp == VK_ESCAPE) mixName = -1;
+            else if (wp == VK_BACK) {
+                if (!mixNameEdit.empty()) mixNameEdit.pop_back();
+            } else if (wp >= 32 && wp != 127 && mixNameEdit.size() < 24) mixNameEdit.push_back((wchar_t)wp);
+            Redraw();
             return 0;
         }
         if (passFor.empty()) return 0;
@@ -1346,15 +1355,15 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case kGhostTimer:
             SyncGhosts();
             break;
-        case kMixTimer:
-            if (mixer.IsOpen() && qsOpen && qsPage == 4) {
-                mixer.Refresh(); // apps start and stop making sound
-                SetTimer(hwnd, kMixTimer, 1000, nullptr);
-                Redraw();
-            }
+        case kMixTimer: { // meters ten times a second, apps and groups once
+            bool slow = mixTimerMs != 100 || ++mixTicks % 10 == 0;
+            DeskTick(mixTimerMs / 1000.0f, !slow);
+            SyncDesk();
+            if (qsOpen && qsPage == 3) Redraw();
             break;
+        }
         case kMixCloseTimer:
-            if (!(qsOpen && qsPage == 4)) mixer.Close(), mixIcons.clear(); // a wheel over an app opened it: let go once the scrolling stops
+            if (!(qsOpen && qsPage == 3) && (moon || TheDeskIdle())) mixer.Close(), mixIcons.clear(); // a wheel over an app opened it: let go once the scrolling stops
             break;
         case kPosTimer: {
             KillTimer(hwnd, kPosTimer);
@@ -1488,6 +1497,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 break;
             }
             PollStatus();
+            if (!moon) SyncDesk(); // mixer groups made in astraeus, or astraeus gone and its job ours
             radios.Recheck(); // throttled inside, and nothing once both radios are known
             if (HasWg(kWgWeather)) RefreshWx(); // cached for half an hour: fetches only when that's up
             if (HasWg(kWgPhoto) && shadeTick % 360 == 0) PickPhoto(); // another picture each hour
@@ -1576,7 +1586,11 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_CALMENU:
         CalMenu();
         return 0;
-    case WM_HOTKEY: // the clipboard's quick key, from any app
+    case WM_HOTKEY: // the clipboard's quick key, from any app; the mixer's shortcuts
+        if (wp >= 0x4D00 && wp < 0x4D00 + 12) {
+            DeskKey((int)wp - 0x4D00);
+            return 0;
+        }
         if (wp == 0x4842) {
             if (full) break; // a fullscreen game keeps the screen
             if (wgOpen && wgKind == kWgClip) SetPanel(Panel::None);
