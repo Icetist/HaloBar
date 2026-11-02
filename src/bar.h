@@ -409,6 +409,9 @@ private:
     void ClipChar(wchar_t ch);
     void ClipThumb(clip::Item& it);
     void ClipMenu();
+    void ClipNoteDone(bool keep); // the note being typed: kept or dropped
+    void ClipClearSince(int64_t secs); // the shown items copied within secs, 0 all; pins and notes stay
+    void ClipDragOut(); // the item pulled out of the panel, dragged with ole
     ID2D1SolidColorBrush* ClipInk(Color c);
     IDWriteTextLayout* ClipLayout(const clip::Item& it, const std::wstring& text, float w, float h, float size, const Theme& t, bool peek);
     float ClipW() const;
@@ -426,6 +429,9 @@ private:
     int clipTries = 0; // the clipboard was busy: read again shortly, a few times
     float clipScroll = 0, clipSetupScroll = 0, clipAnchor = 0; // clipAnchor: the widget's middle along the dock, where the quick key opens the panel
     bool clipSetup = false, clipPeek = false, clipFollow = false, clipMenuUp = false, clipSlideHot = false;
+    bool clipDragged = false; // an item was pulled out: its release isn't a click
+    uint64_t clipNoteId = 0, clipDragId = 0; // the item a note is being typed for; the one about to be dragged out
+    std::wstring clipNoteText;
     HWND clipTarget = nullptr, clipPasteTo = nullptr; // the app the panel opened over; the one a paste is on its way to
     std::vector<int> clipShown; // indices into the history, in the order shown
     uint64_t clipShownVer = ~0ull, clipPeekId = 0, clipPeekImg = 0;
@@ -542,7 +548,7 @@ private:
     void SetMods(const Theme& t, const D2D1_RECT_F& r); // which status modules the dock shows
     void SetWidgets(const Theme& t, const D2D1_RECT_F& r); // the way into the dock's edit mode
     void SetApp(const Theme& t, const D2D1_RECT_F& r); // updates, and handing the taskbar back to windows
-    void SetExtras(const Theme& t, const D2D1_RECT_F& r); // keys, width, tray apps
+    void SetAdvanced(const Theme& t, const D2D1_RECT_F& r); // options most never need
     void SetStart(const Theme& t, const D2D1_RECT_F& r); // the start button's face
     void SetScreens(const Theme& t, const D2D1_RECT_F& r); // one screen or every screen, and which is the main one
     void SetPlace(const Theme& t, const D2D1_RECT_F& r); // a little monitor: tap where the dock goes, an edge or a spot along the bottom
@@ -566,6 +572,7 @@ private:
     // bar_media.cpp
     void OnMedia();
     void SyncCover();
+    void SetArtBg(bool on); // the player's album art backdrop, from our switch or astraeus'
     bool StepBars(float dt, double now);
     void DrawBars(float dt, double now, bool step = true);
     void DrawPlayer(ID2D1Geometry* shape);
@@ -785,6 +792,9 @@ private:
     bool coverTint = false; // the song has art, and its colors tint the media
     ComPtr<ID2D1Bitmap1> cover;
     ComPtr<ID2D1Bitmap> coverBlur;
+    ComPtr<ID2D1Bitmap> coverBg; // the player's full-bleed backdrop, blurred far harder: baked once per cover, only while artBg is on
+    bool artBg = false; // "album art background", shared with astraeus as MediaArtBg
+    int artAlpha = prefs::kArtAlphaDef, vizGain = prefs::kVizGainDef; // its strength and the visualizer's sensitivity, percent, shared too
     float bars[4] = {}; // the row's mini visualizer, eased per frame
     bool mediaCalm = false; // the song's pill was last drawn at rest: only then may the bars' fast frames repaint their square
     double quietSince = -1; // playing yet silent since then: maybe the sound moved to another output

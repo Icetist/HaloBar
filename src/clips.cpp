@@ -1,8 +1,11 @@
 // The clipboard history's store: reading what was copied, keeping it on disk, and putting it back.
 #include "clips.h"
 
+#include <objbase.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <wincrypt.h>
+#include <dpapi.h>
 
 #include <algorithm>
 #include <cwctype>
@@ -12,11 +15,20 @@
 #include "prefs.h"
 #include "sys.h"
 
+#pragma comment(lib, "crypt32.lib")
+
 namespace clip {
 
 namespace {
 
-constexpr uint32_t kMagic = 0x48434248, kVersion = 1; // "HBCH"
+constexpr uint32_t kMagic = 0x48434248, kVersion = 2, kVersionOld = 1; // "HBCH"; 2 added notes and copy counts
+constexpr size_t kIndexMax = 64u << 20; // an index bigger than this is not ours
+constexpr size_t kSealSlack = 64u << 10; // what sealing adds to a file, and then some
+constexpr char kSealTag[4] = {'H', 'B', 'X', '1'}; // a sealed file starts so; anything else is from before sealing
+constexpr BYTE kEntropy[] = "HaloBar clip history"; // ties the blobs to this use, on top of the user's own key
+constexpr int64_t kAgeSecs[kAges] = {0, 3600, 6 * 3600, 86400, 7 * 86400};
+constexpr wchar_t kAside[] = L"index.unreadable"; // an index we couldn't open, kept for whoever can
+constexpr const wchar_t* kSideExts[] = {L".txt", L".htm", L".rtf", L".png", L".t.png"}; // an item's own files
 constexpr size_t kFilesMax = 512; // paths kept from one file copy
 constexpr size_t kPngMax = 64u << 20; // a png bigger than this on the clipboard is not kept
 constexpr UINT kThumbPx = 256; // the previews' longest side, in pixels
@@ -86,6 +98,40 @@ bool WriteAll(const std::wstring& path, const void* data, size_t n) {
     return ok;
 }
 
+bool Replace(const std::wstring& path, const std::string& bytes) { // whole or not at all: a temp beside it, then swapped in
+    std::wstring tmp = path + L".tmp";
+    if (!WriteAll(tmp, bytes.data(), bytes.size())) return DeleteFileW(tmp.c_str()), false;
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    DeleteFileW(tmp.c_str());
+    return false;
+}
+
+bool Sealed(const std::string& raw) { return raw.size() >= sizeof(kSealTag) && memcmp(raw.data(), kSealTag, sizeof(kSealTag)) == 0; }
+
+bool Seal(const std::string& plain, std::string& out) { // dpapi with the current user's key: another account or machine can't open it
+    DATA_BLOB in{(DWORD)plain.size(), (BYTE*)plain.data()}, ent{(DWORD)sizeof(kEntropy), (BYTE*)kEntropy}, got{};
+    if (!CryptProtectData(&in, nullptr, &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &got)) return false;
+    out.assign(kSealTag, sizeof(kSealTag));
+    out.append(reinterpret_cast<const char*>(got.pbData), got.cbData);
+    LocalFree(got.pbData);
+    return true;
+}
+
+bool Unseal(const std::string& raw, std::string& out) { // a plain file from before passes as is; false: sealed, but not for us
+    if (!Sealed(raw)) return out = raw, true;
+    DATA_BLOB in{(DWORD)(raw.size() - sizeof(kSealTag)), (BYTE*)raw.data() + sizeof(kSealTag)}, ent{(DWORD)sizeof(kEntropy), (BYTE*)kEntropy}, got{};
+    if (!CryptUnprotectData(&in, nullptr, &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &got)) return false;
+    out.assign(reinterpret_cast<const char*>(got.pbData), got.cbData);
+    SecureZeroMemory(got.pbData, got.cbData);
+    LocalFree(got.pbData);
+    return true;
+}
+
+bool SealTo(const std::wstring& path, const void* data, size_t n) { // never written in the clear: no seal, no file
+    std::string sealed;
+    return Seal(std::string(static_cast<const char*>(data), n), sealed) && Replace(path, sealed);
+}
+
 bool ReadAll(const std::wstring& path, std::string& out, size_t most) {
     out.clear();
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -99,6 +145,12 @@ bool ReadAll(const std::wstring& path, std::string& out, size_t most) {
     }
     CloseHandle(f);
     return ok;
+}
+
+bool ReadOpen(const std::wstring& path, std::string& out, size_t most) {
+    std::string raw;
+    out.clear();
+    return ReadAll(path, raw, most + kSealSlack) && Unseal(raw, out) && out.size() <= most;
 }
 
 struct Out { // the index, written little endian as it sits in memory
@@ -129,19 +181,23 @@ struct In {
     }
 };
 
+bool Denied(UINT fmt) { // a dword flag set to 0: the copier asked to be left out
+    if (!IsClipboardFormatAvailable(fmt)) return false;
+    HANDLE h = GetClipboardData(fmt);
+    if (!h || GlobalSize(h) < sizeof(DWORD)) return false;
+    const DWORD* v = static_cast<const DWORD*>(GlobalLock(h));
+    bool no = v && *v == 0;
+    if (v) GlobalUnlock(h);
+    return no;
+}
+
 bool Private() { // password managers mark what they copy: never kept
     static const UINT kExclude = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     static const UINT kHistory = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    static const UINT kCloud = RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
     static const UINT kIgnore = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
     if (IsClipboardFormatAvailable(kExclude) || IsClipboardFormatAvailable(kIgnore)) return true;
-    if (IsClipboardFormatAvailable(kHistory))
-        if (HANDLE h = GetClipboardData(kHistory)) {
-            const DWORD* v = static_cast<const DWORD*>(GlobalLock(h));
-            bool no = v && *v == 0;
-            GlobalUnlock(h);
-            return no;
-        }
-    return false;
+    return Denied(kHistory) || Denied(kCloud); // kept from the cloud: kept from us too
 }
 
 std::string Bytes(UINT fmt, size_t most) { // a format's raw bytes, while the clipboard is open; empty when missing or too big
@@ -219,7 +275,9 @@ HGLOBAL Dib(const std::string& png, bool& ok) { // a png's pixels as a bottom-up
     return dib;
 }
 
-bool EncodePng(IWICBitmapSource* src, const std::wstring& path) {
+bool EncodePng(IWICBitmapSource* src, std::string& out) { // into memory: it's sealed before it touches the disk
+    out.clear();
+    ComPtr<IStream> mem;
     ComPtr<IWICStream> st;
     ComPtr<IWICBitmapEncoder> enc;
     ComPtr<IWICBitmapFrameEncode> fr;
@@ -227,13 +285,17 @@ bool EncodePng(IWICBitmapSource* src, const std::wstring& path) {
     UINT w = 0, h = 0;
     WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppBGRA;
     IWICImagingFactory* f = gfx::Wic();
-    if (!f || FAILED(src->GetSize(&w, &h)) || FAILED(f->CreateFormatConverter(&conv)) ||
-        FAILED(conv->Initialize(src, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) || FAILED(f->CreateStream(&st)) ||
-        FAILED(st->InitializeFromFilename(path.c_str(), GENERIC_WRITE)) || FAILED(f->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) ||
+    if (!f || !src || FAILED(src->GetSize(&w, &h)) || FAILED(f->CreateFormatConverter(&conv)) ||
+        FAILED(conv->Initialize(src, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) || FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &mem)) ||
+        FAILED(f->CreateStream(&st)) || FAILED(st->InitializeFromIStream(mem.Get())) || FAILED(f->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) ||
         FAILED(enc->Initialize(st.Get(), WICBitmapEncoderNoCache)) || FAILED(enc->CreateNewFrame(&fr, nullptr)) || FAILED(fr->Initialize(nullptr)) || FAILED(fr->SetSize(w, h)) ||
         FAILED(fr->SetPixelFormat(&fmt)) || FAILED(fr->WriteSource(conv.Get(), nullptr)) || FAILED(fr->Commit()) || FAILED(enc->Commit()))
-        return DeleteFileW(path.c_str()), false;
-    return true;
+        return false;
+    HGLOBAL g = nullptr;
+    STATSTG stat{};
+    if (FAILED(mem->Stat(&stat, STATFLAG_NONAME)) || FAILED(GetHGlobalFromStream(mem.Get(), &g))) return false;
+    if (const void* p = GlobalLock(g)) out.assign(static_cast<const char*>(p), (size_t)stat.cbSize.QuadPart), GlobalUnlock(g);
+    return !out.empty();
 }
 
 ComPtr<IWICBitmapSource> Scaled(IWICBitmapSource* src, UINT most) { // fits most pixels on its longer side
@@ -260,18 +322,19 @@ void WriteImage(ImageJob job) {
     std::thread([job = std::move(job)]() mutable {
         HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         ComPtr<IWICBitmapSource> src = job.bmp;
+        std::string bytes;
         if (!job.png.empty()) {
-            WriteAll(job.full, job.png.data(), job.png.size());
+            SealTo(job.full, job.png.data(), job.png.size());
             ComPtr<IWICStream> st;
             ComPtr<IWICBitmapDecoder> dec;
             ComPtr<IWICBitmapFrameDecode> fr;
             if (SUCCEEDED(gfx::Wic()->CreateStream(&st)) && SUCCEEDED(st->InitializeFromMemory((BYTE*)job.png.data(), (DWORD)job.png.size())) &&
                 SUCCEEDED(gfx::Wic()->CreateDecoderFromStream(st.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &dec)) && SUCCEEDED(dec->GetFrame(0, &fr)))
                 src = fr;
-            if (src) EncodePng(Scaled(src.Get(), kThumbPx).Get(), job.thumb);
+            if (src && EncodePng(Scaled(src.Get(), kThumbPx).Get(), bytes)) SealTo(job.thumb, bytes.data(), bytes.size());
         } else if (src) {
-            EncodePng(src.Get(), job.full);
-            EncodePng(Scaled(src.Get(), kThumbPx).Get(), job.thumb);
+            if (EncodePng(src.Get(), bytes)) SealTo(job.full, bytes.data(), bytes.size());
+            if (EncodePng(Scaled(src.Get(), kThumbPx).Get(), bytes)) SealTo(job.thumb, bytes.data(), bytes.size());
         }
         src.Reset(), job.bmp.Reset(); // the pixels go before the message: the ui may read the files at once
         PostMessageW(job.notify, job.msg, (WPARAM)job.id, 0);
@@ -316,6 +379,8 @@ bool SiteListed(const std::vector<std::wstring>& list, const std::wstring& host)
 
 }
 
+int64_t AgeSecs(int age) { return kAgeSecs[(std::clamp)(age, 0, kAges - 1)]; }
+
 Store& History() {
     static Store s;
     return s;
@@ -354,15 +419,22 @@ void Store::Load() {
     opt.key = (std::clamp)(prefs::ReadNum(L"ClipKey", 1), 0, kKeys - 1);
     opt.theme = (std::clamp)(prefs::ReadNum(L"ClipTheme", 0), 0, kThemes - 1);
     opt.paused = prefs::ReadNum(L"ClipPaused", 0) != 0;
+    opt.age = (std::clamp)(prefs::ReadNum(L"ClipAge", 0), 0, kAges - 1);
+    opt.wipe = prefs::ReadNum(L"ClipWipe", 0) != 0;
     opt.noApps = Split(Lower(sys::ReadText(kNoApps)), L'|');
     opt.noSites = Split(Lower(sys::ReadText(kNoSites)), L'|');
 
-    std::string raw;
+    std::string raw, plain;
     std::unordered_set<uint64_t> ids;
-    if (!dir.empty() && ReadAll(dir + L"\\index.dat", raw, 64u << 20)) {
-        In in{raw.data(), raw.data() + raw.size()};
+    std::wstring index = dir + L"\\index.dat";
+    bool legacy = false, aside = false; // legacy: written before sealing, sealed from now on
+    if (!dir.empty() && GetFileAttributesW(index.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        bool read = ReadAll(index, raw, kIndexMax) && Unseal(raw, plain);
+        legacy = read && !Sealed(raw);
+        In in{plain.data(), plain.data() + plain.size()};
         uint32_t magic = in.Num<uint32_t>(), format = in.Num<uint32_t>(), n = in.Num<uint32_t>();
-        if (magic == kMagic && format == kVersion)
+        if (!read || !in.ok || magic != kMagic || (format != kVersion && format != kVersionOld)) SetAside(index), aside = true; // not ours to overwrite
+        else
             for (uint32_t i = 0; i < n && i < (uint32_t)kMaxHigh * 2 && in.ok; ++i) {
                 Item it;
                 it.id = in.Num<uint64_t>();
@@ -373,24 +445,53 @@ void Store::Load() {
                 it.w = in.Num<uint32_t>(), it.h = in.Num<uint32_t>(), it.argb = in.Num<uint32_t>(), it.count = in.Num<uint32_t>();
                 it.hash = in.Num<uint64_t>();
                 it.head = in.Str(kHeadMax), it.app = in.Str(MAX_PATH), it.note = in.Str(512), it.src = in.Str(2048);
+                if (format >= kVersion) it.memo = in.Str(kMemoMax), it.times = (std::max)(1u, in.Num<uint32_t>());
                 if (!in.ok) break; // a torn tail: what came before stays
                 lastId = (std::max)(lastId, it.id);
                 ids.insert(it.id);
                 items.push_back(std::move(it));
             }
     }
-    WIN32_FIND_DATAW fd; // files no entry points at (a crash between writes): gone
+    WIN32_FIND_DATAW fd{}; // files no entry points at (a crash between writes): gone
+    std::vector<std::wstring> stray;
+    bool held = aside; // an index set aside owns the files beside it: none are swept while it's there
     HANDLE f = dir.empty() ? INVALID_HANDLE_VALUE : FindFirstFileExW((dir + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
     if (f != INVALID_HANDLE_VALUE) {
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY || !_wcsicmp(fd.cFileName, L"index.dat")) continue;
-            uint64_t id = wcstoull(fd.cFileName, nullptr, 16);
-            if (!ids.count(id)) DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+            if (!_wcsnicmp(fd.cFileName, kAside, wcslen(kAside))) held = true;
+            else if (!ids.count(wcstoull(fd.cFileName, nullptr, 16)) || wcsstr(fd.cFileName, L".tmp")) stray.push_back(dir + L"\\" + fd.cFileName);
         } while (FindNextFileW(f, &fd));
         FindClose(f);
     }
+    for (const auto& p : stray)
+        if (!held || wcsstr(p.c_str(), L".tmp")) DeleteFileW(p.c_str());
+    static bool wiped = false; // once per run: the widget leaving and coming back isn't a restart
+    if (opt.wipe && !wiped)
+        for (size_t i = items.size(); i-- > 0;)
+            if (!items[i].Kept()) Remove(i);
+    wiped = true;
     Trim();
+    Expire();
+    if (legacy) Save(), Reseal(); // the plain index and its files, sealed now
     ++ver;
+}
+
+void Store::SetAside(const std::wstring& index) {
+    wchar_t name[64];
+    swprintf_s(name, L"\\%s-%016llx.dat", kAside, (unsigned long long)NewId());
+    if (!MoveFileExW(index.c_str(), (dir + name).c_str(), MOVEFILE_WRITE_THROUGH)) noSave = true; // can't move it either: this run never writes over it
+}
+
+void Store::Reseal() const {
+    std::vector<std::wstring> paths;
+    for (const Item& it : items)
+        for (const wchar_t* ext : kSideExts) paths.push_back(File(it.id, ext));
+    std::thread([paths = std::move(paths)] { // pictures can be big: off the ui thread
+        std::string raw;
+        for (const auto& p : paths)
+            if (ReadAll(p, raw, kPngMax) && !Sealed(raw)) SealTo(p, raw.data(), raw.size()); // missing ones fail quietly
+    }).detach();
 }
 
 void Store::SaveOptions() const {
@@ -406,13 +507,15 @@ void Store::SaveOptions() const {
     prefs::SaveNum(L"ClipKey", opt.key);
     prefs::SaveNum(L"ClipTheme", opt.theme);
     prefs::SaveNum(L"ClipPaused", opt.paused);
+    prefs::SaveNum(L"ClipAge", opt.age);
+    prefs::SaveNum(L"ClipWipe", opt.wipe);
     sys::SaveText(kNoApps, Join(opt.noApps, L'|'));
     sys::SaveText(kNoSites, Join(opt.noSites, L'|'));
 }
 
 void Store::Save() {
     dirty = false;
-    if (dir.empty() || !loaded) return;
+    if (dir.empty() || !loaded || noSave) return;
     Out o;
     o.b.reserve(items.size() * 160);
     o.Num(kMagic), o.Num(kVersion), o.Num((uint32_t)items.size());
@@ -420,14 +523,15 @@ void Store::Save() {
         o.Num(it.id), o.Num(it.at), o.Num((uint8_t)it.kind);
         o.Num((uint8_t)((it.pinned ? 1 : 0) | (it.image ? 2 : 0) | (it.more ? 4 : 0) | (it.html ? 8 : 0) | (it.rtf ? 16 : 0)));
         o.Num(it.w), o.Num(it.h), o.Num(it.argb), o.Num(it.count), o.Num(it.hash);
-        o.Str(it.head), o.Str(it.app), o.Str(it.note), o.Str(it.src);
+        o.Str(it.head), o.Str(it.app), o.Str(it.note), o.Str(it.src), o.Str(it.memo), o.Num(it.times);
     }
-    std::wstring tmp = dir + L"\\index.tmp";
-    if (WriteAll(tmp, o.b.data(), o.b.size())) MoveFileExW(tmp.c_str(), (dir + L"\\index.dat").c_str(), MOVEFILE_REPLACE_EXISTING); // whole or not at all
+    std::string sealed;
+    if (Seal(o.b, sealed)) Replace(dir + L"\\index.dat", sealed); // no seal: nothing written rather than the clear text
+    SecureZeroMemory(o.b.data(), o.b.size());
 }
 
 void Store::Forget(const Item& it) {
-    for (const wchar_t* ext : {L".txt", L".htm", L".rtf", L".png", L".t.png"}) DeleteFileW(File(it.id, ext).c_str()); // missing ones fail quietly
+    for (const wchar_t* ext : kSideExts) DeleteFileW(File(it.id, ext).c_str()); // missing ones fail quietly
 }
 
 void Store::Remove(size_t i) {
@@ -439,13 +543,77 @@ void Store::Remove(size_t i) {
 
 void Store::Clear() {
     for (size_t i = items.size(); i-- > 0;)
-        if (!items[i].pinned) Remove(i);
+        if (!items[i].Kept()) Remove(i);
 }
 
 void Store::Trim() {
-    int unpinned = (int)std::count_if(items.begin(), items.end(), [](const Item& it) { return !it.pinned; });
-    for (size_t i = items.size(); i-- > 0 && unpinned > opt.max;)
-        if (!items[i].pinned) Remove(i), --unpinned;
+    int loose = (int)std::count_if(items.begin(), items.end(), [](const Item& it) { return !it.Kept(); });
+    for (size_t i = items.size(); i-- > 0 && loose > opt.max;)
+        if (!items[i].Kept()) Remove(i), --loose;
+}
+
+bool Store::Expire() {
+    int64_t secs = AgeSecs(opt.age);
+    if (!loaded || secs <= 0) return false;
+    int64_t cut = Now() - secs;
+    bool any = false;
+    for (size_t i = items.size(); i-- > 0;)
+        if (!items[i].Kept() && items[i].at < cut) Remove(i), any = true;
+    return any;
+}
+
+size_t Store::Drop(const std::vector<uint64_t>& ids) {
+    std::unordered_set<uint64_t> gone(ids.begin(), ids.end());
+    size_t n = 0;
+    for (size_t i = items.size(); i-- > 0;)
+        if (gone.count(items[i].id) && !items[i].Kept()) Remove(i), ++n;
+    return n;
+}
+
+void Store::SetMemo(size_t i, std::wstring memo) {
+    if (i >= items.size()) return;
+    for (auto& ch : memo) ch = ch == L'\r' || ch == L'\n' || ch == L'\t' ? L' ' : ch; // one line
+    items[i].memo = Trimmed(memo).substr(0, kMemoMax);
+    dirty = true, ++ver;
+}
+
+std::string Store::Opened(const Item& it, const wchar_t* ext, size_t most) const {
+    std::string out;
+    if (!ReadOpen(File(it.id, ext), out, most)) out.clear();
+    return out;
+}
+
+ComPtr<IWICBitmapSource> Store::Picture(const Item& it, bool thumb, UINT maxPx) const {
+    std::string png = Opened(it, thumb ? L".t.png" : L".png", kPngMax);
+    if (png.empty()) return nullptr; // still being written, or gone
+    return gfx::Decode(reinterpret_cast<const uint8_t*>(png.data()), png.size(), maxPx); // decoded at once: the buffer can go
+}
+
+bool Store::Export(const Item& it, std::wstring& path) const {
+    std::string png = it.image ? Opened(it, L".png", kPngMax) : std::string();
+    PWSTR base = nullptr;
+    if (png.empty() || FAILED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &base))) return CoTaskMemFree(base), false;
+    std::wstring folder = base;
+    CoTaskMemFree(base);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    constexpr int kTries = 100; // "name (2).png" and on, then give up
+    for (int n = 1; n <= kTries; ++n) {
+        wchar_t name[96];
+        swprintf_s(name, n == 1 ? L"\\Clip %04u-%02u-%02u %02u.%02u.%02u.png" : L"\\Clip %04u-%02u-%02u %02u.%02u.%02u (%d).png", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, n);
+        path = folder + name;
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr); // never over a file that's there
+        if (f == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_FILE_EXISTS) continue;
+            return false;
+        }
+        DWORD w = 0;
+        bool ok = WriteFile(f, png.data(), (DWORD)png.size(), &w, nullptr) && w == png.size();
+        CloseHandle(f);
+        if (!ok) DeleteFileW(path.c_str());
+        return ok;
+    }
+    return false;
 }
 
 void Store::Touch(size_t i) {
@@ -469,7 +637,7 @@ void Store::DropPixels() {
 std::wstring Store::Full(const Item& it) const {
     if (!it.more) return it.head;
     std::string raw;
-    if (!ReadAll(File(it.id, L".txt"), raw, kTextMax * sizeof(wchar_t))) return it.head;
+    if (!ReadOpen(File(it.id, L".txt"), raw, kTextMax * sizeof(wchar_t))) return it.head;
     return std::wstring(reinterpret_cast<const wchar_t*>(raw.data()), raw.size() / sizeof(wchar_t));
 }
 
@@ -555,15 +723,16 @@ int Store::Capture(HWND hwnd, HWND notify, UINT doneMsg) {
     for (size_t i = 0; i < items.size(); ++i) // copied again: the old one comes to the top, newer
         if (items[i].hash == got.hash && items[i].kind == got.kind) {
             items[i].app = got.app;
+            items[i].times = (std::min)(items[i].times + 1, kTimesMax); // shown as ×n
             if (!got.src.empty()) items[i].src = got.src;
             Touch(i);
             return 1;
         }
     got.id = NewId();
     got.head = text.substr(0, kHeadMax);
-    if (text.size() > kHeadMax) got.more = WriteAll(File(got.id, L".txt"), text.data(), text.size() * sizeof(wchar_t));
-    if (!html.empty()) got.html = WriteAll(File(got.id, L".htm"), html.data(), html.size());
-    if (!rtf.empty()) got.rtf = WriteAll(File(got.id, L".rtf"), rtf.data(), rtf.size());
+    if (text.size() > kHeadMax) got.more = SealTo(File(got.id, L".txt"), text.data(), text.size() * sizeof(wchar_t));
+    if (!html.empty()) got.html = SealTo(File(got.id, L".htm"), html.data(), html.size());
+    if (!rtf.empty()) got.rtf = SealTo(File(got.id, L".rtf"), rtf.data(), rtf.size());
     if (got.image) {
         ImageJob job{File(got.id, L".png"), File(got.id, L".t.png"), std::move(png), std::move(bmp), notify, doneMsg, got.id};
         WriteImage(std::move(job));
@@ -575,7 +744,7 @@ int Store::Capture(HWND hwnd, HWND notify, UINT doneMsg) {
 bool Store::Put(HWND hwnd, const Item& it, bool plain) const {
     std::string png;
     std::wstring text = it.image ? std::wstring() : Full(it);
-    if (it.image && !ReadAll(File(it.id, L".png"), png, kPngMax)) return false; // still being written, or gone
+    if (it.image && !ReadOpen(File(it.id, L".png"), png, kPngMax)) return false; // still being written, or gone
     bool dibOk = false;
     HGLOBAL dib = it.image ? Dib(png, dibOk) : nullptr;
     if (it.image && !dib) return false;
@@ -588,7 +757,7 @@ bool Store::Put(HWND hwnd, const Item& it, bool plain) const {
         static const UINT kPng = RegisterClipboardFormatW(L"PNG");
         Set(CF_DIB, dib);
         Set(kPng, Global(png.data(), png.size()));
-    } else if (it.kind == kFiles || it.kind == kMedia) { // files go back as files, and their paths as text for an editor
+    } else if ((it.kind == kFiles || it.kind == kMedia) && !plain) { // files go back as files, and their paths as text for an editor
         std::vector<std::wstring> paths = Split(text, L'\n');
         std::wstring list;
         for (const auto& p : paths) list += p + L'\0';
@@ -611,8 +780,8 @@ bool Store::Put(HWND hwnd, const Item& it, bool plain) const {
         Set(CF_UNICODETEXT, Global(text.c_str(), (text.size() + 1) * sizeof(wchar_t)));
         std::string rich;
         static const UINT kHtml = RegisterClipboardFormatW(L"HTML Format"), kRtf = RegisterClipboardFormatW(L"Rich Text Format");
-        if (!plain && it.html && ReadAll(File(it.id, L".htm"), rich, kRichMax)) Set(kHtml, Global(rich.data(), rich.size()));
-        if (!plain && it.rtf && ReadAll(File(it.id, L".rtf"), rich, kRichMax)) Set(kRtf, Global(rich.data(), rich.size()));
+        if (!plain && it.html && ReadOpen(File(it.id, L".htm"), rich, kRichMax)) Set(kHtml, Global(rich.data(), rich.size()));
+        if (!plain && it.rtf && ReadOpen(File(it.id, L".rtf"), rich, kRichMax)) Set(kRtf, Global(rich.data(), rich.size()));
     }
     CloseClipboard();
     return true;

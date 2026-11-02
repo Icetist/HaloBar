@@ -14,6 +14,7 @@
 #include <ctime>
 #include <cwctype>
 
+#include "desktop.h"
 #include "glyphs.h"
 #include "overflow.h"
 #include "popmenu.h"
@@ -192,6 +193,8 @@ bool Bar::Create(HINSTANCE instance) {
     if (!moon) SetTimer(hwnd, kUpdateTimer, kUpdateFirstMs, nullptr); // one updater: the main dock's
     if (!lead) media.Start(hwnd, WM_APP_MEDIA); // one session watcher: a moon shows the main dock's song
     if (!lead) prefsEv = prefs::WatchIsland(), pinsEv = pins::Watch(); // watched once: the main dock passes changes on
+    artBg = prefs::ReadShared(prefs::kMediaArtBg, 0) != 0;
+    artAlpha = prefs::ArtAlpha(), vizGain = prefs::VizGain();
     SyncLook();
     SyncUser(); // the toolbar's user module
     SyncDesktops();
@@ -693,8 +696,9 @@ void Bar::SetQuiet(bool on) {
     if (on) pillUp = false;
 }
 
-void Bar::ShowDesktop() { // explorer's own show desktop, as its corner button: toggles
-    if (HWND explorer = taskbar::ExplorerTray()) { // our tray host shares its class: win+d and the shell's lookups can land on ours
+void Bar::ShowDesktop() { // toggles, as windows' corner button does
+    if (desktop::Toggle()) return; // done here: explorer's hidden taskbar doesn't answer the command everywhere, and a post can't tell
+    if (HWND explorer = taskbar::ExplorerTray()) { // every window refused us: explorer's own, which may still reach them. our tray host shares its class
         PostMessageW(explorer, WM_COMMAND, kTrayShowDesktop, 0);
         return;
     }
@@ -956,6 +960,7 @@ void Bar::FreeDev() {
     photoBmp.Reset();
     cover.Reset();
     coverBlur.Reset();
+    coverBg.Reset();
     surface.Reset();
     visual.Reset();
     target.Reset();
@@ -1144,6 +1149,8 @@ void Bar::OnPrefs() {
         if (q) pillUp = false;
         if (!moon) Banners(cfg.pills || q);
     }
+    SetArtBg(prefs::ReadShared(prefs::kMediaArtBg, 0) != 0); // flipped in astraeus
+    artAlpha = prefs::ArtAlpha(), vizGain = prefs::VizGain(); // its sliders too; the redraw below shows them
     bool glassNow = glass != nullptr;
     SyncLook();
     if (ctx && (LookNow() == 2) != glassNow) FreeDev(); // island went into or out of glass, and the bar follows it
@@ -1243,7 +1250,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             Redraw();
         }
         KillTimer(hwnd, kPeekTimer);
-        bool onSong = false; // the player opens on a click, never on its own
+        bool onSong = cfg.hoverPlay && hasTrack && !moon && !AnyOpen() && Inside(mediaR, p); // off by default: the player opens on a click
         if (onSong && !mediaOpen && !hoverArmed) {
             SetTimer(hwnd, kHoverTimer, kHoverMs, nullptr); // rest on the song and the player grows out of the island
             hoverArmed = true;
@@ -1410,6 +1417,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             ClipPaste();
             break;
         case kClipSaveTimer:
+            clip::History().Expire(); // the auto delete also rides on the save that follows any change
             if (clip::History().dirty) clip::History().Save();
             break;
         case kShadeTimer:
@@ -1442,6 +1450,8 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt);
+            D2D1_POINT_2F at = ToDip(MAKELPARAM(pt.x, pt.y));
+            if (cfg.hoverPlay && hasTrack && !moon && !mediaOpen && !AnyOpen() && Inside(mediaR, at)) Anchor(Mid(mediaR), false), SetMediaOpen(true); // still resting on the song
             break;
         }
         case kCloseTimer: {
@@ -1644,7 +1654,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnMedia();
         return 0;
     case WM_APP_MENU: // wparam: 0 the power user menu, 1 power, 2 the recycle bin
-        wp == 1 ? ShowPowerMenu() : wp == 2 ? BinMenu() : wp == 3 ? ShowUserMenu() : wp == 4 ? AppMenu() : wp == 5 ? ClipMenu() : ShowMenu();
+        wp == 1 ? ShowPowerMenu() : wp == 2 ? BinMenu() : wp == 3 ? ShowUserMenu() : wp == 4 ? AppMenu() : wp == 5 ? ClipMenu() : wp == 6 ? ClipDragOut() : ShowMenu();
         BelowIsland(); // a menu brings its owner to the front: astraeus goes back on top
         return 0;
     case WM_WINDOWPOSCHANGED: // something raised the bar (a menu, the shell, our own topmost call): astraeus' strip goes back on top

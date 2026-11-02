@@ -29,6 +29,7 @@ constexpr UINT kSaveMs = 1500; // copies come in bursts: one index write after
 constexpr int kHotkeyId = 0x4842;
 constexpr size_t kPeekChars = 6000; // a preview shows this much text
 constexpr float kSetupLineH = 34;
+constexpr float kDragStart = 6; // dips the mouse travels with the button down before an item is being dragged out
 constexpr int SysGrid = glyph::kSys | 0xF0E2, SysList = glyph::kSys | 0xEA37, SysEyeOff = glyph::kSys | 0xED1A, SysEye = glyph::kSys | 0xE890;
 constexpr int SysCode = glyph::kSys | 0xE943, SysColor = glyph::kSys | 0xE790, SysDoc = glyph::kSys | 0xE8A5, SysVideo = glyph::kSys | 0xE714, SysMusic = glyph::kSys | 0xEC4F;
 
@@ -103,9 +104,10 @@ void Bar::SyncClip() { // the main dock listens and owns the key for every dock 
 int Bar::OnClipboard2() {
     if (!clipListening) return 0;
     clip::Store& st = clip::History();
+    bool aged = st.Expire(); // the auto delete rides on copies: no timer of its own
     int r = st.Capture(hwnd, hwnd, WM_APP_CLIP);
+    if (aged || r > 0) SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr);
     if (r <= 0) return r;
-    SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr);
     const clip::Item& top = st.items.front();
     if (st.opt.titles && top.kind == clip::kLink && top.note.empty()) { // its page's title, fetched off the ui thread
         std::wstring url = top.head;
@@ -145,11 +147,14 @@ void Bar::OpenClip(float x, bool setup) {
     clipQuery.clear();
     clipSel = 0, clipScroll = 0, clipSetupScroll = 0;
     clipSetup = setup, clipPeek = false, clipFollow = true;
+    clipNoteId = 0, clipNoteText.clear();
+    if (clip::History().Loaded() && clip::History().Expire()) SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr); // and on every opening
     if (!(wgOpen && wgKind == kWgClip)) OpenWidget(kWgClip, x);
     Redraw();
 }
 
 void Bar::ClipClosed() { // the panel went: its previews and layouts go with it
+    if (clipNoteId) ClipNoteDone(true); // a note being typed is kept, as a field losing focus keeps its text
     clip::History().DropPixels();
     clipLays.clear();
     clipPeekLay.Reset(), clipPeekBmp.Reset(), clipPeekId = 0;
@@ -170,7 +175,7 @@ void Bar::ClipFilter() {
         if (!clip::InTab(it, clipTab)) continue;
         int s = 0;
         if (!needle.empty()) {
-            s = (std::max)({clip::Fuzzy(it.head, needle), clip::Fuzzy(it.note, needle), clip::Fuzzy(it.app, needle) / 2, clip::Fuzzy(it.src, needle) / 2});
+            s = (std::max)({clip::Fuzzy(it.head, needle), clip::Fuzzy(it.note, needle), clip::Fuzzy(it.memo, needle), clip::Fuzzy(it.app, needle) / 2, clip::Fuzzy(it.src, needle) / 2});
             if (s < 0) continue;
         } else if (it.pinned && clipTab == clip::kTabAll) {
             s = 1; // pins first, then the newest
@@ -186,7 +191,9 @@ void Bar::ClipFilter() {
 void Bar::ClipPick(int at, bool plain) {
     clip::Store& st = clip::History();
     if (at < 0 || at >= (int)st.items.size()) return;
-    if (!st.Put(hwnd, st.items[(size_t)at], plain || st.opt.plain)) return;
+    const clip::Item& it = st.items[(size_t)at];
+    bool files = it.kind == clip::kFiles || it.kind == clip::kMedia;
+    if (!st.Put(hwnd, it, plain || (st.opt.plain && !files))) return; // files as their paths only when asked each time: "always plain" is about words
     st.Touch((size_t)at);
     SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr);
     HWND back = clipTarget;
@@ -228,6 +235,11 @@ bool Bar::ClipKey(WPARAM vk, bool down) {
         return true;
     }
     if (!down) return false;
+    if (clipNoteId) { // typing a note: enter keeps it, esc drops it, nothing else acts on the list
+        if (vk == VK_RETURN || vk == VK_ESCAPE) ClipNoteDone(vk == VK_RETURN);
+        else if (vk == VK_BACK && GetKeyState(VK_CONTROL) < 0) clipNoteText.clear(), Redraw();
+        return vk != VK_F4; // alt+f4 still closes; tab and the arrows wait for the note
+    }
     bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
     ClipFilter();
     int n = (int)clipShown.size(), cols = clip::History().opt.view ? kGridCols[(std::clamp)(clip::History().opt.size, 0, 2)] : 1;
@@ -269,6 +281,11 @@ bool Bar::ClipKey(WPARAM vk, bool down) {
 }
 
 void Bar::ClipChar(wchar_t ch) {
+    if (clipNoteId) {
+        if (ch == VK_BACK && !clipNoteText.empty()) clipNoteText.pop_back();
+        else if (ch >= 32 && ch != 127 && clipNoteText.size() < clip::kMemoMax && GetKeyState(VK_CONTROL) >= 0) clipNoteText += ch;
+        return Redraw();
+    }
     if (ch == VK_BACK) {
         if (!clipQuery.empty()) clipQuery.pop_back();
     } else if (ch >= 32 && ch != 127 && clipQuery.size() < (size_t)kQueryMax && GetKeyState(VK_CONTROL) >= 0) {
@@ -287,7 +304,7 @@ void Bar::ClipThumb(clip::Item& it) { // its picture, made once while it's on sc
     clip::Store& st = clip::History();
     UINT px = (UINT)std::lround(kThumb * 2 * scale); // room for the grid's bigger cards
     if (it.image) {
-        it.px = gfx::DecodeFile(st.File(it.id, L".t.png").c_str(), (UINT)std::lround(kCardH * scale));
+        it.px = st.Picture(it, true, (UINT)std::lround(kCardH * scale)); // sealed on disk: opened into memory
         if (!it.px) it.pxTried = false; // still being written: tried again when the worker says so
         return;
     }
@@ -357,9 +374,14 @@ void Bar::DrawClip(const Theme& t, const D2D1_RECT_F& r) {
     c.Fill(field, 15, t.text.Alpha(focused ? 0.08f : 0.05f));
     c.Icon(glyph::Search, {field.left + 18, (field.top + field.bottom) / 2}, 16, t.textDim);
     D2D1_RECT_F words = {field.left + 34, field.top, field.right - 12, field.bottom};
-    if (clipQuery.empty()) c.Text(st.opt.paused ? L"Paused: nothing new is kept" : L"Search everything you copied", words, Weight::Regular, 12.5f, st.opt.paused ? t.accentHi : t.textLow);
-    std::wstring shown = clipQuery + (focused && Caret() ? L"│" : L"");
-    c.Text(shown, words, Weight::Regular, 12.5f, t.text);
+    if (clipNoteId && std::none_of(st.items.begin(), st.items.end(), [&](const clip::Item& i) { return i.id == clipNoteId; })) clipNoteId = 0, clipNoteText.clear(); // its item went
+    const std::wstring& typed = clipNoteId ? clipNoteText : clipQuery;
+    if (typed.empty()) {
+        const wchar_t* hint = clipNoteId ? L"A note for this item: Enter keeps it, Esc cancels" : st.opt.paused ? L"Paused: nothing new is kept" : L"Search everything you copied";
+        c.Text(hint, words, Weight::Regular, 12.5f, st.opt.paused || clipNoteId ? t.accentHi : t.textLow);
+    }
+    std::wstring shown = typed + (focused && Caret() ? L"│" : L"");
+    c.Text(shown, words, Weight::Regular, 12.5f, clipNoteId ? t.accentHi : t.text);
     float bx = r.right - 14;
     if (w::IconBtn(ui, t, Ui::Id("clip.setup"), {bx, field.top + 15}, 28, glyph::Settings, 17, true, clipSetup)) clipSetup = !clipSetup, clipSetupScroll = 0;
     bx -= 34;
@@ -430,7 +452,8 @@ int Bar::DrawClipItems(const Theme& t, const D2D1_RECT_F& body) { // the list or
     float scroll = ui.Smooth(Ui::Id("clip.scroll"), clipScroll, 18);
     bool moved = std::fabs(input.mouse.x - clipMouse.x) + std::fabs(input.mouse.y - clipMouse.y) > 0.5f;
     clipMouse = input.mouse;
-    int pick = -1, menu = -1, pin = -1, drop = -1, hovered = -1, made = 0;
+    int pick = -1, menu = -1, pin = -1, drop = -1, hovered = -1, made = 0, drag = -1;
+    if (clipDragged && !input.down && !input.released) clipDragged = false; // the release after a drag has passed: clicks pick again
     bool plain = GetKeyState(VK_SHIFT) < 0, focusedNow = GetForegroundWindow() == hwnd;
     c.PushClip(Inset(body, 0, -2));
     for (int k = 0; k < n; ++k) {
@@ -444,6 +467,8 @@ int Bar::DrawClipItems(const Theme& t, const D2D1_RECT_F& body) { // the list or
         D2D1_RECT_F pinR = Rect(cell.right - 58, cell.top + (grid ? 6 : ch / 2 - 13), 24, 24), dropR = Rect(cell.right - 30, pinR.top, 24, 24);
         Ui::Hit ph = ui.Button(id + 1, pinR), dh = ui.Button(id + 2, dropR); // before the row's own: the first button under a press takes it
         Ui::Hit h = ui.Button(id, hit);
+        if (ui.IsActive(id) && input.down && !clipDragged && std::fabs(input.mouse.x - input.pressPos.x) + std::fabs(input.mouse.y - input.pressPos.y) > kDragStart)
+            clipDragged = true, drag = at; // pulled, not clicked: dragged out once the frame is done
         if (h.hover) hovered = at;
         if (h.hover && moved) clipSel = k;
         bool sel = clipSel == k;
@@ -460,7 +485,7 @@ int Bar::DrawClipItems(const Theme& t, const D2D1_RECT_F& body) { // the list or
         if (h.hover || ph.hover || dh.hover) c.Icon(glyph::Close, {(dropR.left + dropR.right) / 2, (dropR.top + dropR.bottom) / 2}, 16, dh.hover ? Color::Rgb(0xFF6B6B) : t.textDim);
         if (ph.clicked) pin = at;
         else if (dh.clicked) drop = at;
-        else if (h.clicked) pick = at;
+        else if (h.clicked && !clipDragged) pick = at;
         if (input.rclick && Inside(hit, input.mouse)) menu = at;
     }
     c.PopClip();
@@ -472,6 +497,7 @@ int Bar::DrawClipItems(const Theme& t, const D2D1_RECT_F& body) { // the list or
     if (pin >= 0) ClipPin(pin);
     else if (drop >= 0) ClipDrop(drop);
     else if (pick >= 0) ClipPick(pick, plain);
+    else if (drag >= 0) clipDragId = st.items[(size_t)drag].id, PostMessageW(hwnd, WM_APP_MENU, 6, 0); // a drag runs its own loop: not from inside a frame
     else if (menu >= 0) clipMenuAt = menu, PostMessageW(hwnd, WM_APP_MENU, 5, 0); // its menu, after the frame
     if (hovered >= 0) return hovered;
     return n ? clipShown[(size_t)(std::clamp)(clipSel, 0, n - 1)] : -1;
@@ -496,6 +522,8 @@ void Bar::DrawClipRow(const Theme& t, const D2D1_RECT_F& r, clip::Item& it, int 
     if (it.kind == clip::kLink) meta = clip::Host(it.head);
     if (!it.app.empty()) meta += L"  ·  " + it.app.substr(0, it.app.rfind(L'.'));
     meta += L"  ·  " + clip::Ago(it.at);
+    if (it.times > 1) meta += L"  ·  ×" + std::to_wstring(it.times);
+    if (!it.memo.empty()) meta = L"“" + it.memo + L"”  ·  " + meta; // the user's own words first
     c.Text(meta, Rect(tx, r.top + 23, tw, 15), Weight::Regular, 10.5f, t.textLow);
     if (place < 9 && !Inside(r, input.mouse) && !it.pinned) c.Text(L"^" + std::to_wstring(place + 1), Rect(r.right - 40, r.top, 30, Height(r)), Weight::Regular, 10.5f, t.textLow.Alpha(0.6f), Align::Right);
 }
@@ -528,8 +556,9 @@ void Bar::DrawClipCard(const Theme& t, const D2D1_RECT_F& r, clip::Item& it) {
             }
         }
     }
-    std::wstring meta = it.kind == clip::kCode ? it.note : it.kind == clip::kColor ? it.head : std::wstring(KindName(it));
-    c.Text(meta + L"  ·  " + clip::Ago(it.at), Rect(r.left + 10, r.bottom - 22, Width(r) - 70, 16), Weight::Regular, 10.5f, t.textLow);
+    std::wstring meta = !it.memo.empty() ? L"“" + it.memo + L"”" : it.kind == clip::kCode ? it.note : it.kind == clip::kColor ? it.head : std::wstring(KindName(it));
+    meta += L"  ·  " + clip::Ago(it.at) + (it.times > 1 ? L"  ·  ×" + std::to_wstring(it.times) : L"");
+    c.Text(meta, Rect(r.left + 10, r.bottom - 22, Width(r) - 70, 16), Weight::Regular, 10.5f, t.textLow);
 }
 
 void Bar::DrawClipPeek(const Theme& t, const D2D1_RECT_F& body, clip::Item& it) { // alt held: the whole thing, big
@@ -540,12 +569,14 @@ void Bar::DrawClipPeek(const Theme& t, const D2D1_RECT_F& body, clip::Item& it) 
     c.StrokeV(sheet, 16, t.hairTop, t.hairBot, 1);
     D2D1_RECT_F in = Inset(sheet, 16, 14);
     std::wstring meta = std::wstring(KindName(it)) + (it.app.empty() ? L"" : L"  ·  from " + it.app) + L"  ·  " + clip::Ago(it.at);
+    if (it.times > 1) meta += L"  ·  copied " + std::to_wstring(it.times) + L" times";
+    if (!it.memo.empty()) meta = L"“" + it.memo + L"”  ·  " + meta;
     c.Text(meta, Rect(in.left, in.bottom - 14, Width(in), 14), Weight::Regular, 10.5f, t.textLow);
     in.bottom -= 22;
     if (it.image) {
         if (clipPeekImg != it.id) { // the picture at the card's size, decoded once
             clipPeekImg = it.id, clipPeekBmp.Reset();
-            if (auto src = gfx::DecodeFile(st.File(it.id, L".png").c_str(), (UINT)std::lround((std::max)(Width(in), Height(in)) * scale)); src && ctx)
+            if (auto src = st.Picture(it, false, (UINT)std::lround((std::max)(Width(in), Height(in)) * scale)); src && ctx)
                 ctx->CreateBitmapFromWicBitmap(src.Get(), nullptr, &clipPeekBmp);
         }
         if (clipPeekBmp) {
@@ -607,7 +638,8 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     constexpr float kGap = 10, kHead = 30, kFootPad = 10;
     float half = (Width(view) - kGap) / 2;
     float recH = kHead + 5 * kSetupLineH + kFootPad, pasteH = kHead + 2 * kSetupLineH + setui::kNoteLine + kFootPad;
-    float histH = kHead + 14 + 36 + 34 + kFootPad, keyH = kHead + 30 + setui::kNoteLine + kFootPad, lookH = kHead + 3 * 34 + kFootPad;
+    constexpr float kAgeRow = 20 + 30; // "delete after" and its choices
+    float histH = kHead + 14 + 36 + 34 + kAgeRow + kSetupLineH + kFootPad, keyH = kHead + 30 + setui::kNoteLine + kFootPad, lookH = kHead + 3 * 34 + kFootPad;
     float neverH = kHead + 30 + setui::kNoteLine + kFootPad + 8;
     float content = (std::max)(recH, histH + kGap + keyH) + kGap + (std::max)(pasteH + kGap + neverH, lookH) + 4;
     float most = (std::max)(0.0f, content - Height(view));
@@ -647,7 +679,17 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     }
     if (ui.IsActive(sid) && input.released) save = true, st.Trim(), ++st.ver; // trimmed once let go: a drag past the old size never loses anything mid-drag
     if (LabelButton(t, Ui::Id("clip.o.clear"), Rect(in.left, row.bottom + 4, 150, 28), glyph::Delete, L"Clear history")) st.Clear(), SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr), Redraw();
-    c.Text(L"Pins stay", Rect(in.left + 160, row.bottom + 4, Width(in) - 160, 28), Weight::Light, 10.5f, t.textLow);
+    c.Text(L"Pins and notes stay", Rect(in.left + 160, row.bottom + 4, Width(in) - 160, 28), Weight::Light, 10.5f, t.textLow);
+    float ay = row.bottom + 4 + 28 + 6;
+    c.Text(L"Delete after", Rect(in.left, ay, Width(in), 14), Weight::Regular, 11.5f, t.textDim);
+    static const wchar_t* const kAgeNames[clip::kAges] = {L"Never", L"1 h", L"6 h", L"24 h", L"7 d"};
+    if (int k = setui::Segmented(ui, t, "clip.o.age", Rect(in.left, ay + 18, Width(in), 26), kAgeNames, clip::kAges, o.age); k >= 0) {
+        o.age = k, save = true;
+        if (st.Expire()) SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr); // a shorter age takes effect at once
+    }
+    bool wipe = false;
+    setui::Toggle(ui, t, "clip.o.wipe", Rect(in.left, ay + kAgeRow, Width(in), kSetupLineH), L"Clear unpinned on restart", o.wipe != 0, wipe);
+    if (wipe) o.wipe ^= 1, save = true;
 
     in = setui::Box(c, t, Rect(x2, y + histH + kGap, half, keyH), L"QUICK KEY");
     static const wchar_t* const kKeyNames[clip::kKeys] = {L"Off", L"Alt⇧V", L"Ctrl Alt V", L"Win Alt V", L"Ctrl⇧V"};
@@ -697,69 +739,4 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     }
     c.PopClip();
     if (save) st.SaveOptions(), SyncClip(), Redraw();
-}
-
-void Bar::ClipMenu() { // an item's right click: every way to put it back, pin, open, never keep its source, forget
-    clip::Store& st = clip::History();
-    if (clipMenuAt < 0 || clipMenuAt >= (int)st.items.size()) return;
-    const clip::Item it = st.items[(size_t)clipMenuAt]; // a copy: the list may change under the menu
-    enum : UINT { kPaste = 1, kPlain, kCopy, kPin, kOpen, kShow, kNoApp, kNoSite, kForget, kFmt = 100 };
-    std::vector<popmenu::Item> items;
-    items.push_back({.id = kPaste, .glyph = glyph::SysPaste, .label = L"Paste", .hint = L"Enter"});
-    if (!it.image && it.kind != clip::kFiles && it.kind != clip::kMedia) items.push_back({.id = kPlain, .glyph = glyph::Doc, .label = L"Paste as plain text", .hint = L"Shift+Enter"});
-    items.push_back({.id = kCopy, .glyph = glyph::Copy, .label = L"Copy only"});
-    items.push_back({.id = kPin, .glyph = glyph::Pin, .label = it.pinned ? L"Unpin" : L"Pin to the top", .hint = L"Ctrl+P"});
-    std::vector<clip::Fmt> fmts;
-    if (it.kind == clip::kColor) {
-        popmenu::Item as{.glyph = SysColor, .label = L"Copy as"};
-        fmts = clip::Formats(it.argb);
-        for (size_t i = 0; i < fmts.size(); ++i) as.sub.push_back({.id = kFmt + (UINT)i, .label = fmts[i].name, .hint = fmts[i].text});
-        items.push_back(std::move(as));
-    }
-    if (it.kind == clip::kLink) items.push_back({.id = kOpen, .glyph = glyph::OpenNew, .label = L"Open link"});
-    if (it.kind == clip::kFiles || (it.kind == clip::kMedia && !it.image)) items.push_back({.id = kShow, .glyph = glyph::Folder, .label = L"Show in folder"});
-    std::wstring site = it.kind == clip::kLink ? clip::Host(it.head) : clip::Host(it.src);
-    items.push_back(popmenu::Sep());
-    if (!it.app.empty()) items.push_back({.id = kNoApp, .glyph = SysEyeOff, .label = L"Never keep from " + it.app});
-    if (!site.empty()) items.push_back({.id = kNoSite, .glyph = SysEyeOff, .label = L"Never keep from " + site});
-    items.push_back({.id = kForget, .glyph = glyph::Delete, .label = L"Forget", .hint = L"Del", .danger = true});
-    POINT pt;
-    GetCursorPos(&pt);
-    clipMenuUp = true;
-    UINT pick = popmenu::Pick(hwnd, items, {.at = pt, .h = popmenu::Place::Left, .v = popmenu::Place::Auto}, shellNow, scale);
-    clipMenuUp = false;
-    int at = -1; // found again by id: the list may have moved
-    for (size_t i = 0; i < st.items.size(); ++i)
-        if (st.items[i].id == it.id) at = (int)i;
-    if (wgOpen && wgKind == kWgClip) SetForegroundWindow(hwnd); // the keyboard back on the panel
-    if (at < 0 || !pick) return;
-    clip::Options& o = st.opt;
-    switch (pick) {
-    case kPaste: ClipPick(at, false); return;
-    case kPlain: ClipPick(at, true); return;
-    case kCopy: st.Put(hwnd, it, false), st.Touch((size_t)at); break;
-    case kPin: ClipPin(at); break;
-    case kOpen: ShellExecuteW(nullptr, L"open", (it.head.rfind(L"www.", 0) == 0 ? L"https://" + it.head : it.head).c_str(), nullptr, nullptr, SW_SHOWNORMAL); break;
-    case kShow:
-        if (PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(it.head.substr(0, it.head.find(L'\n')).c_str())) SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0), ILFree(pidl);
-        break;
-    case kNoApp:
-        if (std::find(o.noApps.begin(), o.noApps.end(), it.app) == o.noApps.end()) o.noApps.push_back(it.app);
-        st.SaveOptions();
-        break;
-    case kNoSite:
-        if (std::find(o.noSites.begin(), o.noSites.end(), site) == o.noSites.end()) o.noSites.push_back(site);
-        st.SaveOptions();
-        break;
-    case kForget: ClipDrop(at); break;
-    default:
-        if (pick >= kFmt && pick - kFmt < fmts.size()) { // the colour, written another way, onto the clipboard
-            clip::Item as = it;
-            as.head = fmts[pick - kFmt].text, as.more = as.html = as.rtf = false;
-            st.Put(hwnd, as, true);
-        }
-        break;
-    }
-    SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr);
-    Redraw();
 }

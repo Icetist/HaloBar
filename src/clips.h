@@ -17,7 +17,10 @@ enum Tab { kTabAll, kTabPinned, kTabText, kTabCode, kTabLinks, kTabFiles, kTabMe
 constexpr size_t kHeadMax = 1024; // chars kept in memory, shown and searched; the rest waits in its own file
 constexpr size_t kTextMax = 1u << 20; // chars kept at all: a copied novel is cut there
 constexpr size_t kRichMax = 1u << 20; // bytes of html or rtf kept per item
-constexpr int kMaxLow = 25, kMaxHigh = 1000, kMaxDef = 200; // the history's size, as the slider allows
+constexpr int kMaxLow = 100, kMaxHigh = 1000, kMaxDef = 200; // the history's size, as the slider allows
+constexpr size_t kMemoMax = 120; // a note's chars
+constexpr int kAges = 5; // auto delete: never, 1h, 6h, 24h, 7d
+constexpr uint32_t kTimesMax = 999999; // the copy count stops there
 constexpr int kThemes = 7; // code colour themes
 constexpr int kKeys = 5; // the quick key: off, alt+shift+v, ctrl+alt+v, win+alt+v, ctrl+shift+v
 
@@ -34,6 +37,9 @@ struct Item {
     std::wstring app; // the app it came from, its exe name
     std::wstring note; // a link's page title, or code's language
     std::wstring src; // the page it was copied from, when the browser says
+    std::wstring memo; // the user's own note on it: searched, and it's never cleared while set
+    uint32_t times = 1; // copied this often
+    bool Kept() const { return pinned || !memo.empty(); } // clears and limits pass it by
     // made only while it's on screen, dropped as the panel closes
     ComPtr<IWICBitmapSource> px;
     ComPtr<ID2D1Bitmap> bmp;
@@ -53,6 +59,8 @@ struct Options {
     int key = 1; // the quick key, see kKeys
     int theme = 0; // code colours
     int paused = 0; // nothing is kept while on
+    int age = 0; // auto delete after, see kAges
+    int wipe = 0; // what's not kept goes as the app starts
     std::vector<std::wstring> noApps, noSites; // lowercased exe names and site hosts never kept
 };
 
@@ -74,8 +82,14 @@ public:
     bool Put(HWND hwnd, const Item& it, bool plain) const; // back onto the clipboard
     void Touch(size_t i); // copied again: to the top, newer
     void Remove(size_t i);
-    void Clear(); // everything but the pins
+    void Clear(); // everything but the pins and the noted
     void Trim(); // the oldest unpinned past the size go
+    bool Expire(); // older than the auto delete age go; true when any did
+    size_t Drop(const std::vector<uint64_t>& ids); // these go, unless pinned or noted
+    void SetMemo(size_t i, std::wstring memo);
+    std::string Opened(const Item& it, const wchar_t* ext, size_t most) const; // one of its files, opened
+    ComPtr<IWICBitmapSource> Picture(const Item& it, bool thumb, UINT maxPx) const; // its picture, decoded
+    bool Export(const Item& it, std::wstring& path) const; // a picture saved as a png in downloads
     void Unload(); // the widget left the dock: memory back, the files stay
     std::wstring Full(const Item& it) const; // the whole text, from its file when it's long
     std::wstring Dir() const { return dir; }
@@ -84,7 +98,10 @@ public:
 
 private:
     bool loaded = false;
+    bool noSave = false; // the index couldn't be read nor set aside: never written over
     std::wstring dir;
+    void SetAside(const std::wstring& index);
+    void Reseal() const; // plain files from before encryption, sealed off the ui thread
     uint64_t lastId = 0;
     uint64_t NewId();
     void Insert(Item&& it);
@@ -102,6 +119,8 @@ bool ParseColor(const std::wstring& s, uint32_t& argb); // 20+ notations, to srg
 std::wstring CodeLang(const std::wstring& s); // empty when it doesn't read as code
 bool MediaFile(const std::wstring& path);
 bool ImageFile(const std::wstring& path);
+int64_t AgeSecs(int age); // 0: never
+bool DragOut(HWND hwnd, const Store& st, const Item& it); // clip_drag.cpp: the item dragged out as files, a picture or text
 
 struct Fmt { // one way of writing a colour, for its preview
     const wchar_t* name;

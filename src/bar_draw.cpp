@@ -138,6 +138,11 @@ bool Bar::Layout(float dt) {
         wegR = {left, top, left + kWegH, top + rowW};
         wegHit = cfg.edge == 1 ? D2D1_RECT_F{0, top, wegR.right, wegR.bottom} : D2D1_RECT_F{wegR.left, top, W, wegR.bottom};
     }
+    if (!moon) { // the dock floats without reserving room: astraeus' sidebar reads how far it rises, to end above it
+        static int reachSaved = -1;
+        int reach = Vert() ? 0 : (int)std::lround((kWegMargin + kWegH) * scale); // at rest, whatever this frame's tuck
+        if (reach != reachSaved) prefs::SaveNum(L"DockReach", reach), reachSaved = reach;
+    }
 
     // a dropdown: laid out where it always grew, centered and rising from rowTop; cardOff hangs it under the toolbar, or over the dock
     float open = anim::Clamp01(mediaSpring.value / kMediaRise), pk = anim::Clamp01(PeekH() / kPeekRise);

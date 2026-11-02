@@ -6,6 +6,7 @@
 
 #include <cmath>
 
+#include "clips.h"
 #include "glyphs.h"
 #include "starfall.h"
 #include "setui.h"
@@ -65,8 +66,15 @@ constexpr float kThemeH = 168; // the first row: the theme card's swatches and i
 constexpr float kLineH = 34, kNoteH = 14, kSegRow = 32; // a switch line, a quiet note line, a segmented control with its gap
 constexpr float kHead = 30, kFoot = 10; // Box's title band above the rows, its padding below them
 constexpr float CardH(int lines, int notes, int segs = 0) { return kHead + lines * kLineH + notes * kNoteH + segs * kSegRow + kFoot; }
-constexpr float kBarH2 = CardH(2, 2), kClockH = CardH(2, 2), kExtrasH = CardH(3, 0), kStartH = CardH(1, 2, 1); // each card's rows, as drawn below
-constexpr float kPairH = (std::max)(kBarH2, kClockH), kPrefH = (std::max)(kExtrasH, kStartH); // cards side by side share the taller height
+constexpr float kBarH2 = CardH(2, 2), kClockH = CardH(2, 2), kStartH = CardH(1, 1); // each card's rows, as drawn below
+constexpr float kAdvHeadH = 56; // the advanced section's bar, as island's
+bool advOpen = false; // folded each launch: the everyday settings come first
+float advBodyH = 0; // the unfolded cards' height, as measured last frame
+constexpr float kAdvSlideLabelH = 14, kAdvSlideTrackH = 32; // a slider row in an advanced card: its label line, then the track's tall target
+constexpr float kAdvSlideRowH = kAdvSlideLabelH + kAdvSlideTrackH + 4;
+constexpr int kAdvSlideStep = 5; // percent per notch
+constexpr float kPairH = (std::max)(kBarH2, kClockH); // cards side by side share the taller height
+constexpr float kColGap = 24; // between a wide card's two columns
 constexpr float kModsH = 92, kWideH = 64; // the status chips, two rows; one row of buttons across
 constexpr float kNotch = 60; // dips per wheel notch, as island's settings
 constexpr int kPresets[] = {0x5B8CFF, 0x9B7BFF, 0xFF6FAE, 0xFF6B6B, 0xFF9F43, 0xF5C542, 0x3DDC97, 0x2EC4D6}; // island's curated accents
@@ -198,7 +206,9 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
 
     D2D1_RECT_F view = {gx, area.top + 30, area.right, area.bottom}; // what shows; the cards below it scroll into it
     float cw = (Width(view) - 2 * kCardGap) / 3, half = (Width(view) - kCardGap) / 2;
-    float content = kThemeH + kInstH + kPairH + kPrefH + kModsH + 2 * kWideH + 6 * kCardGap; // island's order: the instruments, then switch cards two across, then the wide ones
+    float content = kThemeH + kInstH + kPairH + kStartH + kModsH + 2 * kWideH + kAdvHeadH + 7 * kCardGap;
+    float advShown = advBodyH * ui.Smooth(Ui::Id("set.adv", 2), advOpen ? 1.0f : 0, 11); // the folded section's share, as it unfolds
+    content += advShown; // island's order: the instruments, then switch cards two across, then the wide ones
     float most = (std::max)(0.0f, content - Height(view));
     uint32_t sid = Ui::Id("set.scroll");
     bool overSlide = slideHot; // the wheel over a slider steps it, not the sheet
@@ -223,13 +233,15 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     SetSong(t, Rect(grid.left, y, half, kPairH));
     SetClock(t, Rect(grid.left + half + kCardGap, y, half, kPairH));
     y += kPairH + kCardGap;
-    SetExtras(t, Rect(grid.left, y, half, kPrefH));
-    SetStart(t, Rect(grid.left + half + kCardGap, y, half, kPrefH));
-    y += kPrefH + kCardGap;
+    SetStart(t, Rect(grid.left, y, Width(grid), kStartH)); // the extras moved into advanced: the start card takes the row
+    y += kStartH + kCardGap;
     SetMods(t, Rect(grid.left, y, Width(grid), kModsH));
     y += kModsH + kCardGap;
     SetWidgets(t, Rect(grid.left, y, Width(grid), kWideH));
-    SetApp(t, Rect(grid.left, y + kWideH + kCardGap, Width(grid), kWideH));
+    y += kWideH + kCardGap;
+    SetAdvanced(t, Rect(grid.left, y, Width(grid), kAdvHeadH)); // a bar that unfolds its cards under it, just before halobar's own buttons
+    y += kAdvHeadH + kCardGap + advShown;
+    SetApp(t, Rect(grid.left, y, Width(grid), kWideH));
     rt->PopAxisAlignedClip();
     if (masked) ui.Shift({-kAway.x, -kAway.y});
     input.mouse = mouse;
@@ -480,34 +492,132 @@ void Bar::SetApp(const Theme& t, const D2D1_RECT_F& r) { // halobar itself: its 
     }
 }
 
-void Bar::SetExtras(const Theme& t, const D2D1_RECT_F& r) {
+void Bar::SetAdvanced(const Theme& t, const D2D1_RECT_F& head) { // island's advanced section: a bar, and under it a card per part, each only while that part is in use
     Canvas& c = ui.C();
-    D2D1_RECT_F in = Box(c, t, r, L"EXTRAS");
-    bool k = false, a = false, tr = false;
-    Toggle(ui, t, "set.winkeys", Rect(in.left, in.top, Width(in), kLineH), L"Win + number opens apps", cfg.winKeys != 0, k);
-    Toggle(ui, t, "set.adaptive", Rect(in.left, in.top + kLineH, Width(in), kLineH), L"Full width over maximized", cfg.adaptive != 0, a);
-    Toggle(ui, t, "set.trayapps", Rect(in.left, in.top + 2 * kLineH, Width(in), kLineH), L"Tray apps in the dock", cfg.trayApps != 0, tr); // three lines: kExtrasH
-    if (k) SetPref(cfg.winKeys, L"WinKeys", cfg.winKeys ? 0 : 1), SyncKeyHook();
-    if (a) SetPref(cfg.adaptive, L"Adaptive", cfg.adaptive ? 0 : 1), CheckCovered();
-    if (tr) SetPref(cfg.trayApps, L"TrayApps", cfg.trayApps ? 0 : 1);
+    uint32_t id = Ui::Id("set.adv");
+    float open = ui.Smooth(id + 2, advOpen ? 1.0f : 0, 11);
+    Ui::Hit h = ui.Button(id, head);
+    float hover = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
+    c.Fill(head, 16, t.cardHi.Alpha(0.55f).Mix(t.track, 0.4f * hover));
+    c.StrokeV(head, 16, t.hairTop.Mix(t.accent.Alpha(0.6f), open), t.hairBot, 1);
+    D2D1_POINT_2F badge = {head.left + 30, (head.top + head.bottom) / 2};
+    c.Dot(badge, 16, t.track.Mix(t.accent.Alpha(0.3f), open));
+    c.Icon(glyph::Settings, badge, 19, t.textDim.Mix(t.accentHi, open), open > 0.5f);
+    c.Text(L"Advanced", Rect(head.left + 56, head.top + 9, Width(head) - 110, 20), Weight::Medium, 13, t.text);
+    c.Text(L"Dock keys and width, the player, the clipboard", Rect(head.left + 56, head.top + 29, Width(head) - 110, 16), Weight::Light, 10.5f, t.textLow);
+    D2D1_POINT_2F o = {head.right - 26, (head.top + head.bottom) / 2}; // a chevron that turns over as it opens
+    float turnA = open * kPi, s = 5, cs = std::cos(turnA), sn = std::sin(turnA);
+    auto turn = [&](float x, float y) { return D2D1_POINT_2F{o.x + x * cs - y * sn, o.y + x * sn + y * cs}; };
+    Color ink = t.textDim.Mix(t.text, hover);
+    c.Line(turn(-s, -s * 0.5f), turn(0, s * 0.5f), ink, 2);
+    c.Line(turn(0, s * 0.5f), turn(s, -s * 0.5f), ink, 2);
+    if (h.clicked) advOpen = !advOpen, Redraw();
+    if (open <= 0.001f) return;
+
+    clip::Store& st = clip::History();
+    clip::Options& o2 = st.opt; // the clipboard's own switches, here as well as in its panel
+    bool player = cfg.song != 0, clipUsed = false;
+    for (Bar* b : Docks()) player = player || b->HasWg(kWgMedia), clipUsed = clipUsed || b->HasWg(kWgClip);
+    struct AdvLine {
+        const char* id;
+        const wchar_t* label;
+        bool on;
+    };
+    struct AdvCard {
+        const wchar_t* title;
+        bool shown;
+        AdvLine lines[3];
+        int n;
+        int sliders = 0; // slider rows under the switches
+    };
+    const AdvCard cards[] = {
+        {L"DOCK", true, {{"set.winkeys", L"Win + number opens apps", cfg.winKeys != 0}, {"set.adaptive", L"Full width over maximized", cfg.adaptive != 0}, {"set.trayapps", L"Tray apps in the dock", cfg.trayApps != 0}}, 3},
+        {L"PLAYER", player, {{"set.hoverplay", L"Open the player on hover", cfg.hoverPlay != 0}, {"set.artbg", L"Album art background", artBg}}, 2, 2}, // shared with astraeus, its two sliders too
+        {L"CLIPBOARD", clipUsed, {{"set.clipclean", L"Clean tracking from links", o2.clean != 0}, {"set.clipwipe", L"Clear clips on restart", o2.wipe != 0}, {"set.cliptitles", L"Fetch link titles online", o2.titles != 0}}, 3},
+    };
+    constexpr int kPlayerCard = 1;
+    auto slider = [&](const D2D1_RECT_F& in, float sy, const char* id, const wchar_t* label, int Bar::*field, int lo, int hi, const wchar_t* key) { // a shared percent, live on every dock while dragged, saved on release
+        int val = this->*field;
+        c.Text(label, Rect(in.left, sy, Width(in) - 60, kAdvSlideLabelH), Weight::Regular, 11.5f, t.textDim);
+        c.Text(std::to_wstring(val) + L"%", Rect(in.right - 60, sy - 1, 60, kAdvSlideLabelH + 2), Weight::Semi, 12, t.accentHi, Align::Right);
+        if (open <= 0.99f) return; // unfolding: nothing to catch a stray drag
+        D2D1_RECT_F row = Rect(in.left - 4, sy + kAdvSlideLabelH + 2, Width(in) + 8, kAdvSlideTrackH);
+        float v = (float)(val - lo) / (hi - lo);
+        w::SlideLook lk;
+        lk.bubble = std::to_wstring(val) + L"%";
+        lk.step = (float)kAdvSlideStep / (hi - lo);
+        uint32_t sid = Ui::Id(id);
+        if (Inside(row, input.mouse)) slideHot = true; // the wheel steps the slider, not the sheet
+        bool save = false;
+        if (w::Slide(ui, t, sid, row, v, lk)) {
+            int nv = lo + (int)std::lround(v * (hi - lo) / kAdvSlideStep) * kAdvSlideStep;
+            for (Bar* b : Docks()) b->*field = nv, b->Redraw();
+            if (!ui.IsActive(sid)) save = true; // a wheel notch or a click: no release to wait for
+        }
+        if (ui.IsActive(sid) && input.released) save = true;
+        if (save) prefs::SaveShared(key, this->*field); // astraeus hears it and follows
+    };
+    constexpr int kCards = sizeof(cards) / sizeof(cards[0]);
+    float top = head.bottom + kCardGap, half = (Width(head) - kCardGap) / 2, y = top - (1 - open) * 24; // rises into place as it unfolds
+    c.PushClip({head.left - 4, top - 4, head.right + 4, top + advBodyH * open});
+    bool flip[kCards][3] = {};
+    int col = 0;
+    float rowH = 0;
+    for (int i = 0; i < kCards; ++i) {
+        const AdvCard& cd = cards[i];
+        if (!cd.shown) continue; // that part isn't in the dock: nothing of it here
+        float h2 = CardH(cd.n, 0) + cd.sliders * kAdvSlideRowH;
+        D2D1_RECT_F in = Box(c, t, Rect(head.left + col * (half + kCardGap), y, half, h2), cd.title);
+        for (int k = 0; k < cd.n; ++k) {
+            bool f = false;
+            if (open > 0.99f) Toggle(ui, t, cd.lines[k].id, Rect(in.left, in.top + k * kLineH, Width(in), kLineH), cd.lines[k].label, cd.lines[k].on, f);
+            else c.Text(cd.lines[k].label, Rect(in.left, in.top + k * kLineH, Width(in) - 56, kLineH), Weight::Regular, 11.5f, t.text.Mix(t.textDim, 0.25f)); // unfolding: the words only, nothing to catch a stray click
+            flip[i][k] = f;
+        }
+        if (i == kPlayerCard) {
+            float sy = in.top + cd.n * kLineH + 2;
+            if (artBg) slider(in, sy, "set.artalpha", L"Background strength", &Bar::artAlpha, prefs::kArtAlphaMin, prefs::kArtAlphaMax, prefs::kMediaArtAlpha);
+            else c.Text(L"Background strength: album art off", Rect(in.left, sy, Width(in), kAdvSlideLabelH), Weight::Light, 10.5f, t.textLow); // nothing to strengthen
+            slider(in, sy + kAdvSlideRowH, "set.vizgain", L"Visualizer sensitivity", &Bar::vizGain, prefs::kVizGainMin, prefs::kVizGainMax, prefs::kVizGain);
+        }
+        rowH = (std::max)(rowH, h2);
+        if (++col == 2) y += rowH + kCardGap, col = 0, rowH = 0;
+    }
+    if (col) y += rowH + kCardGap;
+    c.PopClip();
+    advBodyH = y - (top - (1 - open) * 24);
+    if (flip[0][0]) SetPref(cfg.winKeys, L"WinKeys", cfg.winKeys ? 0 : 1), SyncKeyHook();
+    if (flip[0][1]) SetPref(cfg.adaptive, L"Adaptive", cfg.adaptive ? 0 : 1), CheckCovered();
+    if (flip[0][2]) SetPref(cfg.trayApps, L"TrayApps", cfg.trayApps ? 0 : 1);
+    if (flip[1][0]) SetPref(cfg.hoverPlay, L"HoverPlay", cfg.hoverPlay ? 0 : 1);
+    if (flip[1][1]) {
+        bool on = !artBg;
+        prefs::SaveShared(prefs::kMediaArtBg, on ? 1 : 0); // astraeus hears it and follows
+        for (Bar* b : Docks()) b->SetArtBg(on); // every screen's player, without waiting on the watch
+    }
+    if (flip[2][0]) o2.clean ^= 1;
+    if (flip[2][1]) o2.wipe ^= 1;
+    if (flip[2][2]) o2.titles ^= 1;
+    if (flip[2][0] || flip[2][1] || flip[2][2]) st.SaveOptions(), SyncClip(), Redraw();
 }
 
-void Bar::SetStart(const Theme& t, const D2D1_RECT_F& r) { // the start button: its face, and what it opens; one segmented row, a note, a line, a note: kStartH
+void Bar::SetStart(const Theme& t, const D2D1_RECT_F& r) { // the start button: its face on the left, what it opens on the right, each with a note: kStartH
     Canvas& c = ui.C();
-    D2D1_RECT_F in = Box(c, t, r, L"START BUTTON");
+    D2D1_RECT_F box = Box(c, t, r, L"START BUTTON");
+    float colW = (Width(box) - kColGap) / 2;
+    D2D1_RECT_F in = {box.left, box.top, box.left + colW, box.bottom}, right = {box.right - colW, box.top, box.right, box.bottom};
     static const wchar_t* const kFaces[] = {L"", L""}; // the logos themselves, drawn over the cells
-    D2D1_RECT_F seg = Rect(in.left, in.top, Width(in), kSegRow - 6);
+    D2D1_RECT_F seg = Rect(in.left, in.top + (kLineH - kSegRow + 6) / 2, Width(in), kSegRow - 6); // centred on the switch line beside it
     int f = Segmented(ui, t, "set.startface", seg, kFaces, 2, cfg.startIcon);
     for (int i = 0; i < 2; ++i) {
         D2D1_POINT_2F o = {seg.left + Width(seg) * (i + 0.5f) / 2, (seg.top + seg.bottom) / 2};
         Color ink = i == cfg.startIcon ? t.onAccent : t.textDim;
         StartMark(o, i == 1 ? 11.0f : 13.0f, i, ink, ink); // the halo logo carries its own margin: drawn a touch smaller
     }
-    Note(c, t, in, in.top + kSegRow, L"The logo at the start of the dock");
-    float y = in.top + kSegRow + kNoteH;
+    Note(c, t, in, in.top + kLineH, L"The logo at the start of the dock");
     bool b = false;
-    Toggle(ui, t, "set.launch", Rect(in.left, y, Width(in), kLineH), L"Opens the launcher", cfg.launcher != 0, b); // off: the logo opens windows' own start
-    Note(c, t, in, y + kLineH, L"Off: Windows' own start menu");
+    Toggle(ui, t, "set.launch", Rect(right.left, right.top, Width(right), kLineH), L"Opens the launcher", cfg.launcher != 0, b); // off: the logo opens windows' own start
+    Note(c, t, right, right.top + kLineH, L"Off: Windows' own start menu");
     if (f >= 0) SetPref(cfg.startIcon, L"StartIcon", f), haloLogo.Reset();
     if (b) SetPref(cfg.launcher, L"Launcher", cfg.launcher ? 0 : 1);
 }

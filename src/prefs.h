@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 
+#include <algorithm>
+
 namespace prefs {
 
 struct Look { // astraeus island's appearance, so the two read as one desktop
@@ -38,7 +40,7 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int edge = 0; // the screen edge the dock stands on: 0 bottom, 1 left, 2 right; astraeus reads it to stay off that side
     int align = 0; // 0 the dock in the middle, sized to what's in it; 1 across the screen, apps from the left and the status at the right end; 2 the same, mirrored
     int screens = 1; // 0 the dock on one screen, the one picked or the main one; 1 a dock on every screen, as windows' own taskbar
-    int hoverPlay = 1; // resting on the song opens the player
+    int hoverPlay = 0; // resting on the song opens the player; off: a click does
     int date = 1; // the date under the time
     int clock24 = kFollow; // kFollow = the system's clock format, 0 12-hour, 1 24-hour
 };
@@ -55,6 +57,13 @@ Settings Load(); // the bar's own settings, HKCU\Software\HaloBar, each clamped 
 int ReadNum(const wchar_t* name, int fallback);
 int ReadShared(const wchar_t* name, int fallback); // what halobar and astraeus share, under astraeus' key: do not disturb
 void SaveShared(const wchar_t* name, int value);
+inline constexpr wchar_t kMediaArtBg[] = L"MediaArtBg"; // shared: the player's album art as its whole background, 0 or 1
+inline constexpr wchar_t kMediaArtAlpha[] = L"MediaArtAlpha"; // shared: that background's strength, percent
+inline constexpr wchar_t kVizGain[] = L"VizGain"; // shared: how hard the visualizer reacts, percent
+inline constexpr int kArtAlphaMin = 20, kArtAlphaMax = 100, kArtAlphaDef = 100;
+inline constexpr int kVizGainMin = 50, kVizGainMax = 200, kVizGainDef = 100;
+inline int ArtAlpha() { return (std::clamp)(ReadShared(kMediaArtAlpha, kArtAlphaDef), kArtAlphaMin, kArtAlphaMax); } // astraeus clamps the same
+inline int VizGain() { return (std::clamp)(ReadShared(kVizGain, kVizGainDef), kVizGainMin, kVizGainMax); }
 void SaveNum(const wchar_t* name, int value);
 void Delete(const wchar_t* name);
 

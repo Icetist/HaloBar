@@ -135,12 +135,16 @@ ComPtr<ID2D1Bitmap> BakeBlur(ID2D1DeviceContext* ctx, ID2D1Bitmap1* source, floa
     float dx, dy;
     ctx->GetDpi(&dx, &dy);
     ctx->GetTarget(&was);
+    D2D1_MATRIX_3X2_F xf;
+    ctx->GetTransform(&xf);
     ctx->SetDpi(96, 96);
     ctx->SetTarget(out.Get()); // bake once, not every frame
+    ctx->SetTransform(D2D1::Matrix3x2F::Identity()); // the last frame's scale and atlas offset would bake the image off to one side
     ctx->BeginDraw();
     ctx->Clear(D2D1::ColorF(0, 0, 0, 0));
     ctx->DrawImage(blur.Get());
     ctx->EndDraw();
+    ctx->SetTransform(xf);
     ctx->SetTarget(was.Get());
     ctx->SetDpi(dx, dy);
     return out;
@@ -518,7 +522,7 @@ ID2D1BitmapBrush* Canvas::BitmapBrush(ID2D1Bitmap* bmp) {
     ComPtr<ID2D1BitmapBrush> b;
     if (FAILED(rt->CreateBitmapBrush(bmp, &b))) return nullptr; // brush lets us fill a rounded rect
     b->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    constexpr size_t kMaxBmpBrushes = 2; // a frame only draws the cover and its blur
+    constexpr size_t kMaxBmpBrushes = 3; // a frame draws the cover, its blur and the album art background
     if (bmpBrushes.size() >= kMaxBmpBrushes) bmpBrushes.erase(bmpBrushes.begin()); // drops the old cover's gpu copy too
     bmpBrushes.emplace_back(bmp, b);
     return b.Get();

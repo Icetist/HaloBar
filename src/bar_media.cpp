@@ -10,6 +10,9 @@ constexpr float kPi = 3.14159265f;
 constexpr int kBlobs = 5; // a few big soft blobs across the player, as on island's media card
 constexpr double kQuietRebindSec = 2.5; // a song this long without a sound is listened for on the default output again
 constexpr WPARAM kIslandStage = 110; // astraeus' host opens its fullscreen player on this command
+constexpr float kArtBgSigma = 3; // album art background: just softened, the cover clearly itself; the default look is already a color wash
+constexpr float kArtBgViz = 0.7f; // the music's glow over the cover: faint, the art is the show
+constexpr float kArtBgDim = 0.18f, kArtBgVeilTop = 0.08f, kArtBgVeilBot = 0.55f; // clear at the top, deeper under the row; white text still holds on a white cover
 
 std::wstring Clock(double seconds) {
     int s = (int)(std::max)(0.0, seconds);
@@ -71,18 +74,29 @@ void Bar::SyncCover() {
         coverId = id;
         cover.Reset();
         coverBlur.Reset();
+        coverBg.Reset();
         coverSrc.Reset();
         if (bytes) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512);
         coverTint = coverSrc != nullptr;
         if (coverTint) SetMedia(Make(mediaSeed = theme::FromBmp(coverSrc.Get())));
         else SetMedia(shellTo);
     }
-    if (!coverTint || cover || !ctx) return;
-    if (!coverSrc && bytes) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512); // a new device: the same art again
-    if (coverSrc && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover))) {
-        coverBlur = gfx::BakeBlur(ctx.Get(), cover.Get(), 26.0f); // heavy blur for the player's backdrop, baked once
-        coverSrc.Reset(); // on the device now: its megabyte of pixels goes
+    if (!coverTint || !ctx) return;
+    if (!cover) {
+        if (!coverSrc && bytes) coverSrc = gfx::Decode(track.cover->data(), track.cover->size(), 512); // a new device: the same art again
+        if (coverSrc && SUCCEEDED(ctx->CreateBitmapFromWicBitmap(coverSrc.Get(), nullptr, &cover))) {
+            coverBlur = gfx::BakeBlur(ctx.Get(), cover.Get(), 26.0f); // heavy blur for the player's backdrop, baked once
+            coverSrc.Reset(); // on the device now: its megabyte of pixels goes
+        }
     }
+    if (artBg && cover && !coverBg) coverBg = gfx::BakeBlur(ctx.Get(), cover.Get(), kArtBgSigma); // once per cover, never per frame
+}
+
+void Bar::SetArtBg(bool on) {
+    if (on == artBg) return;
+    artBg = on;
+    if (!on) coverBg.Reset(); // off: its pixels go; the next frame bakes it again when on
+    Redraw();
 }
 
 bool Bar::StepBars(float dt, double now) {
@@ -92,7 +106,7 @@ bool Bar::StepBars(float dt, double now) {
     if (!playing || l + r > 0.0001f) quietSince = -1;
     else if (quietSince < 0) quietSince = now;
     else if (now - quietSince > kQuietRebindSec) Peaks().Refresh(), quietSince = now; // the old output still answers, with silence: headphones came along mid-song
-    float level = std::sqrt((l + r) / 2); // sqrt lifts quiet passages so the bars stay alive
+    float level = std::sqrt((l + r) / 2) * vizGain / 100.0f; // sqrt lifts quiet passages so the bars stay alive; the sensitivity slider scales it
     bool moving = false;
     for (int i = 0; i < 4; ++i) {
         float wobble = 0.55f + 0.45f * std::sin((float)now * (5.0f + i * 1.7f) + i * 1.3f); // each bar on its own rhythm
@@ -160,7 +174,7 @@ bool Bar::StepSwell(float dt, bool playing) {
         want /= (b1 - b0); // average: blobs swell, they don't spike
         float& g = swell.gain[i];
         g = (std::max)(want, g - dt * 0.12f); // its recent loudest, slowly forgotten: every blob uses its whole range at any volume
-        want = anim::Clamp01((want / (std::max)(g, 0.18f) - 0.30f) / 0.70f); // relative to that: quiet sinks, every hit stands up
+        want = anim::Clamp01((want / (std::max)(g, 0.18f) * vizGain / 100.0f - 0.30f) / 0.70f); // relative to that: quiet sinks, every hit stands up; the sensitivity slider scales it
         float& v = swell.level[i];
         v += (want - v) * (std::min)(1.0f, dt * (want > v ? 16.0f : 3.2f)); // swells fast, sinks soon after
         sum += v;
@@ -195,13 +209,20 @@ void Bar::DrawPlayer(ID2D1Geometry* shape) {
 
     // the whole island takes on the song: its blurred cover and the music's light, kept inside the shape
     rt->PushLayer(D2D1::LayerParameters(pill, shape), nullptr);
-    if (coverBlur) {
+    if (artBg && coverBg) { // album art background: the cover edge to edge, at full strength
+        c.Image(coverBg.Get(), pill, 0, a * artAlpha / 100.0f); // its strength slider, shared with astraeus
+        c.Fill(pill, 0, Color{0, 0, 0, kArtBgDim * a}); // darker first, whatever the cover
+        c.FillV(pill, 0, t.veil.Alpha(kArtBgVeilTop * a), t.veil.Alpha(kArtBgVeilBot * a)); // then the look's own veil: the text keeps its contrast in light looks too
+    } else if (coverBlur) {
         c.Image(coverBlur.Get(), pill, 0, 0.6f * a);
         c.FillV(pill, 0, t.veil.Alpha(0.58f * a), t.veil.Alpha(0.92f * a)); // darker toward the row, so it stays legible even over a white cover
     }
     if (StepSwell(ui.Dt(), hasTrack && track.playing)) {
         ui.KeepAlive(); // animate until fully faded
+        bool faint = artBg && coverBg;
+        if (faint) rt->PushLayer(D2D1::LayerParameters(pill, nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), kArtBgViz), nullptr);
         DrawSwell(Rect(pill.left, pill.top, Width(pill), rowTop - pill.top), t, ui.Now());
+        if (faint) rt->PopLayer();
     }
     rt->PopLayer();
     if (a <= 0.01f) return;
