@@ -122,7 +122,7 @@ void Bar::DrawBars(float dt, double now, bool step) { // the row's mini visualiz
     if (step) barsMoving = StepBars(dt, now);
     float a = anim::Clamp01((mediaShow - 0.4f) / 0.6f), cy = (barsRect.top + barsRect.bottom) / 2;
     if (a <= 0) return;
-    const Theme& mt = mediaNow; // the song's own colors
+    const Theme& mt = inkNow ? *inkNow : mediaNow; // the song's own colors; clear: the bar's ink
     float cx = (barsRect.left + barsRect.right) / 2;
     for (int i = 0; i < 4; ++i) {
         float v = bars[i], bh = 3 + 11 * v; // island's pill bars
@@ -145,7 +145,7 @@ void Bar::Wave(const D2D1_RECT_F& r, const Theme& t) {
     if (!ui.IsActive(id)) preview = -1;
     float amp = ui.Smooth(id + 1, track.playing && !ui.IsActive(id) ? 3.2f : 0, 5); // the wave flattens when paused or dragging
     float cy = (r.top + r.bottom) / 2;
-    float x = r.left + Width(r) * anim::Clamp01(v);
+    float x = w::ThumbAt(r.left, r.right, 2, anim::Clamp01(v)); // the 4 wide playhead's edge meets the ends
     const float gap = 7; // gap around the head
     float a0 = r.left + 2, a1 = known ? x - gap : r.right - 2;
     WaveLine(c, a0, a1, cy, amp, ui.Now(), t.accent, 3.5f, 28);

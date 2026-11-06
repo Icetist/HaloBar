@@ -464,14 +464,15 @@ float Bar::MixRows(const Theme& t, const D2D1_RECT_F& r, float y) {
         D2D1_RECT_F track = {r.left + 30, cy - 3, r.right - 30, cy + 3};
         float v = (1 - d.chatMix) / 2; // left is all game
         uint32_t id = Ui::Id("mx.chat");
-        bool moved = ui.Slider(id, {track.left, cy - 14, track.right, cy + 14}, v, false);
+        constexpr float kChatKnob = 7;
+        bool moved = ui.Slider(id, {track.left + kChatKnob, cy - 14, track.right - kChatKnob, cy + 14}, v, false);
         if (float n = ui.Wheel({r.left, cy - 18, r.right, cy + 18})) v = (std::clamp)(v - n * kWheelStep, 0.0f, 1.0f), moved = true;
         if (moved) d.chatMix = std::fabs(v - 0.5f) < 0.03f ? 0.0f : 1 - 2 * v, d.profile = -1, DeskSave(); // snaps to even near the middle
-        float shown = ui.Smooth(id + 1, (1 - d.chatMix) / 2, 18), mid = (track.left + track.right) / 2, x = track.left + Width(track) * shown;
+        float shown = ui.Smooth(id + 1, (1 - d.chatMix) / 2, 18), mid = (track.left + track.right) / 2, x = w::ThumbAt(track.left, track.right, kChatKnob, shown);
         c.Fill(track, 3, t.text.Alpha(0.10f));
         c.Fill({(std::min)(mid, x), track.top, (std::max)(mid, x), track.bottom}, 3, Color::Rgb(d.chatMix > 0 ? game.color : chat.color));
         c.Fill(Rect(mid - 1, track.top - 4, 2, 14), 1, t.textLow);
-        c.Dot({x, cy}, 7, t.text);
+        c.Dot({x, cy}, kChatKnob, t.text);
     }
     return top + h;
 }

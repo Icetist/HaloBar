@@ -156,6 +156,14 @@ void Bar::LeaveDock(bool back) {
 void Bar::DockKey(WPARAM vk) {
     int n = tasks ? (std::min)(dockCount, (int)tasks->Apps().size()) : 0;
     if (n <= 0 || vk == VK_ESCAPE) return LeaveDock(true);
+    if (vk == 'S' && cfg.a11yKeys) { // settings: the keyboard's way into the panels
+        HWND back = keyBack;
+        LeaveDock(false);
+        Anchor(W / 2, false);
+        SetSettingsOpen(true);
+        EnterKeys(back);
+        return;
+    }
     if (vk == VK_LEFT || vk == VK_UP) dockKey = (dockKey - 1 + n) % n;
     else if (vk == VK_RIGHT || vk == VK_DOWN || vk == VK_TAB) dockKey = (dockKey + 1) % n;
     else if (vk == VK_HOME) dockKey = 0;

@@ -1,5 +1,6 @@
 #include "ui.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "anim.h"
@@ -26,6 +27,86 @@ void Ui::End() {
     hits.swap(nextHits); // double buffer: hit test uses last frame's rects
     nextHits.clear();
     lastHover = HitAt(in.mouse);
+    fire = stepId = setId = 0; // keyboard presses last one frame
+    stepDir = 0;
+    if (focus && std::none_of(hits.begin(), hits.end(), [this](const Item& h) { return h.id == focus && h.stop; })) reveal = false; // gone with its panel
+}
+
+void Ui::Tab(int dir) {
+    std::vector<const Item*> stops;
+    for (const Item& h : hits)
+        if (h.stop) stops.push_back(&h);
+    if (stops.empty()) return;
+    int at = -1;
+    for (int i = 0; i < (int)stops.size(); ++i)
+        if (stops[i]->id == focus) at = i;
+    int n = (int)stops.size();
+    at = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n; // lost its place: from the ends, and round again
+    focus = stops[at]->id;
+    reveal = true;
+}
+
+bool Ui::SliderFocused() const {
+    return std::any_of(hits.begin(), hits.end(), [this](const Item& h) { return h.id == focus && h.role == Role::Slider; });
+}
+
+bool Ui::KeyMove(uint32_t id, float& value, float step) {
+    bool moved = false;
+    if (id == setId) value = anim::Clamp01(setTo), moved = true;
+    if (id == stepId && stepDir) {
+        float was = value;
+        value = anim::Clamp01(value + stepDir * step);
+        moved = value != was;
+    }
+    if (moved) animating = true;
+    return moved;
+}
+
+void Ui::Mark(Role role, bool on, float value) {
+    if (blocked || nextHits.empty()) return; // blocked: no control was registered for this
+    Item& it = nextHits.back();
+    it.role = role;
+    it.on = on;
+    it.value = value;
+}
+
+void Ui::Name(const std::wstring& name, const std::wstring& valueText) {
+    if (blocked || !listening || nextHits.empty()) return;
+    nextHits.back().name = name;
+    nextHits.back().valueText = valueText;
+}
+
+void Ui::NoStop() {
+    if (!blocked && !nextHits.empty()) nextHits.back().stop = false;
+}
+
+void Ui::DrawFocus(Color ring, Color edge) {
+    if (!focus) return;
+    for (const Item& h : nextHits) {
+        if (h.id != focus || !h.stop) continue;
+        D2D1_MATRIX_3X2_F was;
+        canvas->Target()->GetTransform(&was);
+        canvas->Target()->SetTransform(frameXf);
+        D2D1_RECT_F r = Inset(h.r, -3, -3);
+        float rad = (std::min)((std::min)(Width(r), Height(r)) / 2, 12.0f);
+        canvas->Stroke(r, rad, edge, 4.5f); // two tones: it shows over any color
+        canvas->Stroke(r, rad, ring, 2.5f);
+        canvas->Target()->SetTransform(was);
+        return;
+    }
+}
+
+void Ui::Reveal(const D2D1_RECT_F& view, float shown, float& target) {
+    if (!reveal || !focus) return;
+    for (const Item& h : hits) {
+        if (h.id != focus) continue;
+        if (!h.inList) return; // not in this list: the dock, say
+        constexpr float kAir = 14; // a little room around it
+        if (h.r.top < view.top + kAir) target = shown - (view.top + kAir - h.r.top);
+        else if (h.r.bottom > view.bottom - kAir) target = shown + (h.r.bottom - view.bottom + kAir);
+        else reveal = false; // in view
+        return;
+    }
 }
 
 void Ui::AddHit(uint32_t id, const D2D1_RECT_F& r) {
@@ -35,12 +116,16 @@ void Ui::AddHit(uint32_t id, const D2D1_RECT_F& r) {
     D2D1::Matrix3x2F toLocal = m * inv; // map hit rect back to frame space
     D2D1_POINT_2F a = toLocal.TransformPoint({r.left, r.top});
     D2D1_POINT_2F b = toLocal.TransformPoint({r.right, r.bottom}); // corners only, assumes no rotation
-    nextHits.push_back({id, D2D1_RECT_F{a.x, a.y, b.x, b.y}});
+    Item item;
+    item.id = id;
+    item.r = {a.x, a.y, b.x, b.y};
+    item.inList = inList;
+    nextHits.push_back(std::move(item));
 }
 
 uint32_t Ui::HitAt(D2D1_POINT_2F p) const {
     for (auto it = hits.rbegin(); it != hits.rend(); ++it) // reverse: last drawn is on top
-        if (Inside(it->second, p)) return it->first;
+        if (Inside(it->r, p)) return it->id;
     return 0;
 }
 
@@ -91,11 +176,16 @@ Ui::Hit Ui::Button(uint32_t id, const D2D1_RECT_F& r) {
     h.down = active == id && in.down;
     if (active == id && in.released) h.clicked = Inside(r, in.mouse); // click only if released inside
     if (h.hover) hand = true; // hand cursor
+    if (id == fire) h.clicked = true, animating = true; // the keyboard or a reader pressed it: what it changed shows next frame
+    if (id == focus && keyHeld) h.down = h.hover = true;
     return h;
 }
 
 bool Ui::Slider(uint32_t id, const D2D1_RECT_F& r, float& value, bool vertical) {
     Hit h = Button(id, r);
+    Mark(Role::Slider, false, value);
+    constexpr float kKeyStep = 0.05f; // 5% a press, as a wheel notch
+    if (KeyMove(id, value, kKeyStep)) return true;
     if (active != id || !(in.down || in.released)) return false; // only while dragging
     (void)h;
     float f = vertical ? 1 - (in.mouse.y - r.top) / Height(r) : (in.mouse.x - r.left) / Width(r); // vertical: bottom = 0
@@ -214,7 +304,9 @@ bool Pill(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, int glyph, 
     Ui::Hit iconHit = iconTap ? ui.Button(id + 7, iconZone) : Ui::Hit{}; // no tap wanted: the icon is just a picture
     if (iconTap) *iconTap = iconHit.clicked;
     D2D1_RECT_F track = {r.left + h + 10, r.top, r.right - 50, r.bottom}; // 50px reserved for percent label
-    bool changed = ui.Slider(id, track, value, false);
+    constexpr float kKnob = 6.5f, kKnobHot = 2.5f; // the knob at rest, and how much it swells
+    bool changed = ui.Slider(id, Inset(track, kKnob, 0), value, false); // the mouse moves the knob's middle, which stops short of the ends
+    ui.Name(glyph == glyph::Bright ? L"Brightness" : L"Volume", off ? std::wstring(L"Muted") : Pct(value));
     float notches = ui.Wheel(r);
     if (notches != 0) {
         value = anim::Clamp01(value + notches * 0.05f); // 5% per wheel notch
@@ -234,12 +326,12 @@ bool Pill(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, int glyph, 
     float th = 5 + 2 * glow; // track thickens on hover
     c.Fill({track.left, cy - th / 2, track.right, cy + th / 2}, th / 2, t.track);
     float mute = ui.Smooth(id + 5, off ? 1.0f : 0, 14);
-    float x = track.left + Width(track) * shown * (1 - mute); // muted: the bar empties, the level is kept for when it comes back
-    if (x > track.left + th) { // skip fill when too short to round
-        c.Fill({track.left - 2, cy - th / 2 - 3, x + 2, cy + th / 2 + 3}, th / 2 + 3, t.accent.Alpha((0.10f + 0.10f * glow) * (1 - mute)));
-        c.FillH({track.left, cy - th / 2, x, cy + th / 2}, th / 2, t.accent.Mix(t.textLow, mute), t.accentHi.Mix(t.textLow, mute)); // muted: the level is kept, greyed
+    float level = shown * (1 - mute); // muted: the bar empties, the level is kept for when it comes back
+    float knob = kKnob + kKnobHot * glow, x = ThumbAt(track.left, track.right, knob, level), end = track.left + Width(track) * level; // the fill runs the whole track as the knob runs its own shorter way
+    if (end > track.left + th) { // skip fill when too short to round
+        c.Fill({track.left - 2, cy - th / 2 - 3, end + 2, cy + th / 2 + 3}, th / 2 + 3, t.accent.Alpha((0.10f + 0.10f * glow) * (1 - mute)));
+        c.FillH({track.left, cy - th / 2, end, cy + th / 2}, th / 2, t.accent.Mix(t.textLow, mute), t.accentHi.Mix(t.textLow, mute)); // muted: the level is kept, greyed
     }
-    float knob = 6.5f + 2.5f * glow;
     if (glow > 0.001f) c.Dot({x, cy}, knob + 5, t.accent.Alpha(0.20f * glow));
     c.Dot({x, cy}, knob, t.text);
     c.Text(off ? std::wstring(L"Muted") : Pct(value), {r.right - 44, r.top, r.right, r.bottom}, Weight::Medium, 12, t.textDim.Mix(t.text, glow), Align::Right);
@@ -316,6 +408,7 @@ void Spark(Canvas& c, const D2D1_RECT_F& r, const std::vector<float>& values, ui
 
 bool Chip(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, const std::wstring& label, bool selected) {
     Ui::Hit h = ui.Button(id, r);
+    ui.Mark(Ui::Role::Toggle, selected);
     float sel = ui.Smooth(id, selected ? 1.0f : 0, 14);
     float hover = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
     Canvas& c = ui.C();
@@ -330,6 +423,7 @@ bool Chip(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, const std::
 bool Switch(Ui& ui, const Theme& t, uint32_t id, D2D1_POINT_2F c, bool on, bool enabled) {
     D2D1_RECT_F r = {c.x - 23, c.y - 13, c.x + 23, c.y + 13};
     Ui::Hit h = enabled ? ui.Button(id, r) : Ui::Hit{};
+    if (enabled) ui.Mark(Ui::Role::Toggle, on);
     float k = ui.Smooth(id, on ? 1.0f : 0, 18); // knob travel 0..1
     float hover = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 16);
     float a = enabled ? 1.0f : 0.4f;
@@ -347,8 +441,8 @@ bool Slide(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, float& val
     constexpr float kTrack = 6, kTrackHot = 9; // the track's thickness at rest, and under the mouse
     constexpr float kThumb = 8, kThumbHot = 10.5f, kThumbHeld = 12; // the thumb's radius at rest, hovered, held
     constexpr float kBubbleH = 24, kBubbleGap = 8; // the value's bubble, and its gap above the thumb
-    float inset = kThumbHeld + 2; // the thumb never leaves the row, even at its ends
-    D2D1_RECT_F rail = {r.left + inset, r.top, r.right - inset, r.bottom};
+    constexpr float kEdge = 4; // the track's ends from the row's, in line with the card's other contents
+    D2D1_RECT_F rail = {r.left + kEdge + kThumb, r.top, r.right - kEdge - kThumb, r.bottom}; // the mouse moves the thumb's middle, which stops short of the ends
     bool changed = ui.Slider(id, rail, value, false); // a press anywhere on the row jumps there, then follows
     bool held = ui.IsActive(id);
     if (float n = ui.Wheel(r); n != 0) value = anim::Clamp01(value + n * look.step), changed = true;
@@ -356,15 +450,15 @@ bool Slide(Ui& ui, const Theme& t, uint32_t id, const D2D1_RECT_F& r, float& val
     float hov = ui.Smooth(id + 1, hot ? 1.0f : 0, 16), hold = ui.Smooth(id + 2, held ? 1.0f : 0, 18);
     float shown = ui.Smooth(id + 3, value, held ? 34.0f : 13.0f); // tight while pulled, a soft glide for a click or a wheel
     Canvas& c = ui.C();
-    float cy = (r.top + r.bottom) / 2, th = kTrack + (kTrackHot - kTrack) * hov, x = rail.left + Width(rail) * shown;
-    D2D1_RECT_F track = {rail.left, cy - th / 2, rail.right, cy + th / 2};
+    float cy = (r.top + r.bottom) / 2, th = kTrack + (kTrackHot - kTrack) * hov;
+    D2D1_RECT_F track = {r.left + kEdge, cy - th / 2, r.right - kEdge, cy + th / 2};
+    float rad = kThumb + (kThumbHot - kThumb) * hov + (kThumbHeld - kThumbHot) * hold, x = ThumbAt(track.left, track.right, rad, shown);
     if (look.ramp) {
         c.FillH(track, th / 2, look.lo, look.hi); // the range itself is the picture
     } else {
         c.Fill(track, th / 2, t.track.Mix(t.text.Alpha(0.16f), 0.35f * hov));
-        if (x > track.left + 0.5f) c.Fill({track.left, track.top, (std::max)(x, track.left + th), track.bottom}, th / 2, t.accent); // solid, as every picked control in settings
+        if (shown > 0.001f) c.Fill({track.left, track.top, (std::max)(track.left + Width(track) * shown, track.left + th), track.bottom}, th / 2, t.accent); // the whole track at 100%; solid, as every picked control in settings
     }
-    float rad = kThumb + (kThumbHot - kThumb) * hov + (kThumbHeld - kThumbHot) * hold;
     if (hov > 0.01f) c.Dot({x, cy}, rad + 6 + 2 * hold, t.accent.Alpha(0.16f * hov)); // a halo says it's live
     if (look.ramp) {
         c.Dot({x, cy}, rad, Color{1, 1, 1, 1});

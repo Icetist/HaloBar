@@ -66,6 +66,14 @@ public:
     void FillGeoV(ID2D1Geometry* g, const D2D1_RECT_F& bounds, Color top, Color bottom);
     void StrokeGeo(ID2D1Geometry* g, Color c, float width);
     void Glow(D2D1_POINT_2F center, float rx, float ry, Color c); // radial falloff, cached per color
+    struct Word { // something written or an icon drawn, for a screen reader; TextOnce's typed text is never among them
+        std::wstring text;
+        int glyph = 0;
+        D2D1_RECT_F r{};
+    };
+    void Listen(bool on) { listening = on; } // a reader is here: remember this frame's words
+    const std::vector<Word>& Words() const { return words; }
+    void WordBase(const D2D1_MATRIX_3X2_F& m) { wordBase = m; } // a pass's transform: words are kept in dips, whatever its atlas offset
     void NewFrame(); // advances frame counter, sweeps stale layouts
     void FillV(const D2D1_RECT_F& r, float radius, Color top, Color bottom); // V = vertical gradient, H = horizontal
     void StrokeV(const D2D1_RECT_F& r, float radius, Color top, Color bottom, float width);
@@ -84,6 +92,10 @@ public:
     void PopClip();
 
 private:
+    void Say(const std::wstring& s, int glyph, const D2D1_RECT_F& r);
+    std::vector<Word> words;
+    D2D1_MATRIX_3X2_F wordBase = D2D1::IdentityMatrix();
+    bool listening = false;
     struct TextLay {
         std::wstring text;
         IDWriteTextFormat* format;

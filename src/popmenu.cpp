@@ -506,7 +506,7 @@ UINT Pick(HWND owner, const std::vector<Item>& items, const Place& place, const 
     s->t = t;
     s->scale = scale > 0 ? scale : 1;
     s->glass = t.glass;
-    s->light = !t.glass && theme::Luma(t.bg) > 0.4f;
+    s->light = t.glass ? theme::Luma(t.text) < 0.5f : theme::Luma(t.bg) > 0.4f; // glass with black ink: windows' pale acrylic under it
     GetCursorPos(&s->openedAt);
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfoW(MonitorFromPoint(place.at, MONITOR_DEFAULTTONEAREST), &mi);

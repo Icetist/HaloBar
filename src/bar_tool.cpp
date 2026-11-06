@@ -42,13 +42,14 @@ void Bar::PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float s
     Canvas& c = *canvas;
     constexpr float kAa = 1.5f; // antialiasing's reach
     float rimW = t.glass ? 1.1f : 1.0f;
+    if (Clear()) return; // no material at all: the ink sits straight on the desktop
     bool flat = only && Within(*only, r, radius, kAa); // a pass that only touches its middle: a plain rect paints the same pixels without the curves
     bool rim = !only || !Within(*only, r, radius + rimW / 2, rimW + kAa); // and the outline can't reach it (its inner edge: inset by its width, the curve by half): not drawn at all
     float fr = flat ? 0 : radius;
     c.Fill(r, fr, Body(t)); // the solid looks at the opacity setting
     if (t.stars) starfall::Sky(c, r, radius, t, skyT, Body(t).a, 1, nullptr, 1, skyDrift); // island's starfall; its orb moves only while this bar is hovered
     if (t.glass) {
-        if (shade > 0.01f) c.Fill(r, fr, Color{0.02f, 0.02f, 0.04f, 0.45f * shade}); // smoked over a white page, so the ink still reads
+        if (shade > 0.01f) c.Fill(r, fr, Tint(shade)); // smoked over a white page, or frosted over a dark one: the ink still reads
         c.FillV(r, fr, t.sheen, t.sheen.Alpha(0));
         if (rim) c.Stroke(r, radius, Color{1, 1, 1, 0.24f}, rimW);
     } else if (rim) {
@@ -63,8 +64,10 @@ ComPtr<ID2D1Geometry> Bar::Chrome() {
     auto add = [&](const D2D1_RECT_F& r, float radius) {
         if (r.right > r.left && SUCCEEDED(gfx::D2D()->CreateRoundedRectangleGeometry({r, radius, radius}, &geo[n]))) parts[n] = geo[n].Get(), ++n;
     };
-    add(capL, 0); // the top bar's strip, square to the screen's edges
-    add(wegDrawn, WegRadius());
+    if (!Clear()) { // clear has no body there: only its panels get the blur
+        add(capL, 0); // the top bar's strip, square to the screen's edges
+        add(wegDrawn, WegRadius());
+    }
     D2D1_RECT_F c = CardOnScreen();
     add(c, (std::min)(CardRadius(), Height(c) / 2));
     ComPtr<ID2D1GeometryGroup> g;
@@ -77,8 +80,9 @@ bool Bar::Module(uint32_t id, const D2D1_RECT_F& r, bool lit) {
     float hov = ui.Smooth(id + 1, h.hover ? 1.0f : 0, 18), on = ui.Smooth(id + 2, lit ? 1.0f : 0, 16);
     Canvas& c = ui.C();
     float rad = Height(r) / 2; // pills, as island's buttons
-    if (on > 0.01f) c.Fill(r, rad, shellNow.accent.Alpha(0.26f * on)); // its panel is open: an accent wash
-    if (hov > 0.01f) c.Fill(r, rad, shellNow.text.Alpha(0.09f * hov));
+    const Theme& ink = inkNow ? *inkNow : shellNow;
+    if (on > 0.01f) c.Fill(r, rad, ink.accent.Alpha(0.26f * on)); // its panel is open: an accent wash
+    if (hov > 0.01f) c.Fill(r, rad, ink.text.Alpha(0.09f * hov));
     return h.clicked;
 }
 
@@ -385,13 +389,13 @@ void Bar::DrawToolbar(const Theme& t) {
     if (!TopOn() || topSink >= 0.999f) return;
     Canvas& c = ui.C();
     capL = barR;
-    c.Fill(barR, 0, Body(t)); // edge to edge, in island's material
+    if (!Clear()) c.Fill(barR, 0, Body(t)); // edge to edge, in island's material
     if (t.stars) starfall::Sky(c, barR, 0, t, skyT, Body(t).a, 0, nullptr, 1, skyDrift);
     if (t.glass) {
-        if (shadeTopNow > 0.01f) c.Fill(barR, 0, Color{0.02f, 0.02f, 0.04f, 0.45f * shadeTopNow}); // smoked over a white page
+        if (shadeTopNow > 0.01f) c.Fill(barR, 0, Tint(shadeTopNow));
         c.FillV(barR, 0, t.sheen, t.sheen.Alpha(0));
     }
-    c.Line({0, barR.bottom - 0.5f}, {W, barR.bottom - 0.5f}, t.hairBot, 1); // a hairline under it
+    if (!Clear()) c.Line({0, barR.bottom - 0.5f}, {W, barR.bottom - 0.5f}, t.hairBot, 1); // a hairline under it
     float cy = barR.top + kBarH / 2, top = cy - kItemH / 2;
 
     // ---- left: who's signed in, a bar, the app in front ----
@@ -511,7 +515,7 @@ D2D1_RECT_F Bar::DockArea() const {
 void Bar::DrawWegCol(const Theme& t) { // the same dock, top to bottom: the logo, the apps and the widgets, the status
     Canvas& c = ui.C();
     bool left = cfg.edge == 1;
-    c.Glow({left ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow on the screen's side
+    if (!Clear()) c.Glow({left ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow on the screen's side
     PaintPlate(wegR, WegRadius(), t, shadeBotNow);
     float y = wegR.top + kWegPad, cross = wegR.left + kWegPad, mid = cross + kIcon / 2;
     auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) {
@@ -559,7 +563,7 @@ void Bar::DrawWeg(const Theme& t) {
     Canvas& c = ui.C();
     wegDrawn = wegR;
     if (Vert()) return DrawWegCol(t);
-    c.Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow under it
+    if (!Clear()) c.Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow under it
     PaintPlate(wegR, WegRadius(), t, shadeBotNow);
 
     float x = wegR.left + kWegPad, top = rowTop + kWegPad, mid = top + kIcon / 2;
@@ -621,7 +625,7 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
     Canvas& c = *canvas;
     D2D1_RECT_F r = mediaR;
     if (r.right <= r.left) return;
-    const Theme& mt = mediaNow; // the album's own colors
+    const Theme& mt = inkNow ? *inkNow : mediaNow; // the album's own colors; clear: its colors could vanish, the ink can't
     bool song = hasTrack && !track.title.empty();
     uint32_t id = Ui::Id("weg.media");
     float hov = live ? ui.Smooth(id + 1, Inside(r, input.mouse) ? 1.0f : 0, 18) : 0; // the visualizer's own frames run only while the mouse is elsewhere

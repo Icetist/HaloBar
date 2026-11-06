@@ -11,6 +11,7 @@ struct Look { // astraeus island's appearance, so the two read as one desktop
     int accentHex = 0xB8C4FF;
     int customBg = 0x121826;
     int glassBlur = 100; // 0 clear glass .. 100 full backdrop blur
+    int glassTint = -1; // glass' tint in astraeus, 0xRRGGBB; -1 the plain dark one
     int bgOpacity = 100; // the solid looks' body, percent; 100 while island follows the bar back, as its look falls to dark
     bool followsBar = false; // island's look is set to follow the bar's: following it back would only loop to dark
     bool reduceMotion = false; // island's switch, else windows' own "animation effects" off
@@ -18,8 +19,13 @@ struct Look { // astraeus island's appearance, so the two read as one desktop
 
 struct Settings { // the bar's own choices; "follow" means whatever island uses
     static constexpr int kFollow = -1;
-    int look = kFollow; // the astraeus theme's material: kFollow, or 0 dark, 1 light, 2 glass, 3 custom
+    static constexpr int kClear = 6; // the bar's own: past astraeus' numbers, which it reads as following us
+    int look = kFollow; // the astraeus theme's material: kFollow, or 0 dark, 1 light, 2 glass, 3 custom, kClear
+    struct ThemeSet { int look, accent, accentHex, customBg, blur, opacity, glassTint; };
+    int appsTheme = 0; // a whole theme of its own while a window is maximized on its screen
+    ThemeSet otherSet{}; // the theme not in the live fields: every reader keeps reading those, so nothing can be missed
     int blur = 100; // glass frost when the bar picks its own look
+    int glassTint = -1; // glass: the tint, 0xRRGGBB; -1 plain dark. pale ones take black icons, and frost over dark pages instead of smoking over bright ones
     static constexpr int kMinOpacity = 40; // island's floor: below this the dock floats on nothing
     int opacity = 100; // the solid looks: how much of the desktop shows through the body, when the bar picks its own look
     int accent = kFollow; // kFollow, 0 wallpaper, 1 the hex below
@@ -43,10 +49,17 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int hoverPlay = 0; // resting on the song opens the player; off: a click does
     int date = 1; // the date under the time
     int clock24 = kFollow; // kFollow = the system's clock format, 0 12-hour, 1 24-hour
+    enum { kContrastAuto, kContrastOn, kContrastOff };
+    static constexpr int kTextMin = 100, kTextMax = 200;
+    int a11yContrast = kContrastAuto; // high contrast: as windows has it, or always, or never
+    int a11yFollow = 1; // windows' "make text bigger" counts
+    int a11yText = kTextMin; // percent, the text size picked here
+    int a11yKeys = 1; // tab, enter and the arrows
+    int a11yReader = 1; // screen readers can see the dock
 };
 
 inline constexpr wchar_t kBarKeyPath[] = L"Software\\HaloBar", kIslandKeyPath[] = L"Software\\Astraeus"; // the bar's settings, and island's (read only)
-Look IslandLook(); // island's settings, or its defaults when it isn't installed
+Look IslandLook(bool notOnDesktop = false); // island's settings, or its defaults when it isn't installed; its not-on-desktop theme, if it has one
 bool IslandInstalled(); // astraeus island is on this pc: its installed copy, its autostart entry, or it running
 HANDLE WatchIsland(); // auto-reset event set when island's settings change, null without island
 void Rearm(HANDLE ev); // after the event fired: watch for the next change
@@ -65,6 +78,7 @@ inline constexpr int kVizGainMin = 50, kVizGainMax = 200, kVizGainDef = 100;
 inline int VizAlpha() { return (std::clamp)(ReadShared(kVizAlpha, kVizAlphaDef), kVizAlphaMin, kVizAlphaMax); } // astraeus clamps the same
 inline int VizGain() { return (std::clamp)(ReadShared(kVizGain, kVizGainDef), kVizGainMin, kVizGainMax); }
 void SaveNum(const wchar_t* name, int value);
+void SaveForApps(bool on); // theme values go to the over-apps set from here on
 void Delete(const wchar_t* name);
 
 }

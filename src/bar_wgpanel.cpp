@@ -1,6 +1,7 @@
 // What rises over the dock from a widget: the forecast, the load, the clipboard, a folder, a note, the day's events, lists,
 // clocks, and edit mode's gallery, where widgets are picked by category, previewed live, sized and set up.
 #include "bar.h"
+#include "duration.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -35,6 +36,8 @@ constexpr float kGalleryRise = 470;
 float Bar::WidgetPanelW() const { return wgKind == kWgGallery ? kGalleryW : wgKind == kWgClip ? ClipW() : kWgW; }
 
 float Bar::WidgetRise() const {
+    static_assert(!IsFace(kWgGallery), "the gallery can't share a number with a widget");
+    if (IsFace(wgKind)) return faces::PanelH(wgKind - kWgFaces, kWgW);
     auto list = [&](size_t n) { return kHead + 14 + (float)(std::max)((size_t)1, (std::min)(n, (size_t)kListRows)) * kRow + 46; };
     switch (wgKind) {
     case kWgGallery: return kGalleryRise;
@@ -84,6 +87,10 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         c.Text(draft + (blink ? L"│" : L""), Inset(f, 12, 0), Weight::Regular, 12.5f, t.text);
     };
     bool closeOnRight = true;
+    if (IsFace(wgKind)) {
+        faces::Panel(ui, t, wgKind - kWgFaces, r, faceHost = FaceHost());
+        closeOnRight = false; // a list's rows take the right click themselves
+    }
     switch (wgKind) {
     case kWgGallery:
         DrawGallery(t, r);
@@ -394,7 +401,14 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         c.Text(label, b, Weight::Medium, 11.5f, on ? t.onAccent : can ? t.textDim.Mix(t.text, h.hover ? 0.6f : 0) : t.textLow, Align::Center);
         return h.clicked;
     };
-    c.TextSp(L"CUSTOMIZE DOCK", Rect(r.left, r.top, 240, 14), Weight::Medium, 10, t.textLow, 1.4f);
+    faceHost = FaceHost();
+    c.TextSp(L"CUSTOMIZE DOCK", Rect(r.left, r.top, 130, 14), Weight::Medium, 10, t.textLow, 1.4f);
+    D2D1_RECT_F find = Rect(r.left + 134, r.top - 6, Width(r) - 134 - 80, 26); // typing searches every widget
+    c.Fill(find, 13, t.text.Alpha(0.06f));
+    c.Icon(glyph::Search, {find.left + 15, find.top + 13}, 14, t.textDim);
+    D2D1_RECT_F words = {find.left + 28, find.top, find.right - 8, find.bottom};
+    if (draft.empty()) c.Text(L"Type to search widgets", words, Weight::Regular, 11.5f, t.textLow);
+    else c.Text(draft + (Caret() ? L"│" : L""), words, Weight::Regular, 11.5f, t.text);
     if (chip(Ui::Id("gal.done"), Rect(r.right - 70, r.top - 6, 70, 26), L"Done", true)) {
         SetPanel(Panel::None);
         return;
@@ -431,12 +445,30 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
             }
         };
         static const int kMins[] = {15, 25, 45, 60}, kGoals[] = {6, 8, 10, 12};
+        if (s.kind != kWgFocus) focusTyping = false, draftFocus.clear();
         if (s.kind == kWgWeather) {
             opt("gal.wx", {L"°C", L"°F"}, fahrenheit ? 1 : 0, [&](int i) { fahrenheit = i == 1, prefs::SaveNum(L"WgFahrenheit", i), Redraw(); });
         } else if (s.kind == kWgFocus) {
-            int cur = 1;
+            int cur = -1; // none: a length that was typed
             for (int i = 0; i < 4; ++i) cur = kMins[i] == focusMin ? i : cur;
-            opt("gal.focus", {L"15m", L"25m", L"45m", L"60m"}, cur, [&](int i) { focusMin = kMins[i], prefs::SaveNum(L"WgFocusMin", focusMin), Redraw(); });
+            std::vector<std::wstring> labels = {L"15m", L"25m", L"45m", L"60m"};
+            opt("gal.focus", labels, cur, [&](int i) { focusMin = kMins[i], focusTyping = false, draftFocus.clear(), prefs::SaveNum(L"WgFocusMin", focusMin), Redraw(); });
+            float fx = x;
+            for (const std::wstring& l : labels) fx += TextW(l, Weight::Medium, 11.5f) + 23; // past the chips: their width and gap, as opt lays them
+            constexpr float kFocusFieldW = 120;
+            D2D1_RECT_F box = Rect(fx, cy - 12, kFocusFieldW, 24);
+            Ui::Hit fh = ui.Button(Ui::Id("gal.focus.field"), box);
+            bool bad = focusTyping && !draftFocus.empty() && !duration::Parse(draftFocus);
+            c.Fill(box, 12, t.track.Alpha(0.6f));
+            c.Stroke(box, 12, bad ? Color::Rgb(0xFF6B6B) : focusTyping ? t.accent : fh.hover ? t.text.Alpha(0.4f) : t.hairTop, 1);
+            D2D1_RECT_F words = Inset(box, 10, 0);
+            if (focusTyping) {
+                c.Text(draftFocus + ((int)(ui.Now() * 2) % 2 == 0 ? L"|" : L""), words, Weight::Regular, 11.5f, t.text);
+                ui.KeepAlive(); // the caret blinks
+            } else {
+                c.Text(cur < 0 ? std::to_wstring(focusMin) + L"m" : std::wstring(L"Custom"), words, Weight::Medium, 11.5f, cur < 0 ? t.accentHi : t.textDim);
+            }
+            if (fh.clicked && !focusTyping) focusTyping = true, draftFocus.clear();
         } else if (s.kind == kWgWater) {
             int cur = 1;
             for (int i = 0; i < 4; ++i) cur = kGoals[i] == waterGoal ? i : cur;
@@ -447,6 +479,11 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
             if (chip(Ui::Id("gal.clipmore"), Rect(x + 110, cy - 12, 100, 24), L"More options", false)) OpenClip(W / 2, true);
         } else if (s.kind == kWgFolder) {
             opt("gal.folder", {L"Docs", L"Desktop", L"Pics", L"Music", L"Videos"}, folderPick, [&](int i) { folderPick = i, prefs::SaveNum(L"WgFolder", i), Redraw(); });
+        } else if (IsFace(s.kind) && faces::WantsKeys(s.kind - kWgFaces)) {
+            if (chip(Ui::Id("gal.faceset"), Rect(x, cy - 12, 70, 24), L"Set up", false)) {
+                OpenWidget(s.kind, W / 2);
+                return;
+            }
         }
         if (s.kind != kWgApps && chip(Ui::Id("gal.remove"), Rect(sel.right - 92, cy - 12, 80, 24), L"Remove", false)) {
             wgSlots.erase(wgSlots.begin() + wgSel);
@@ -461,15 +498,28 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
     // the categories, then every widget in the chosen one as a card with a live preview
     float tx = r.left;
     for (int k = 0; k < wg::kCatCount; ++k) {
-        float w = TextW(wg::CatName(k), Weight::Medium, 11.5f) + 22;
+        float w = TextW(wg::CatName(k), Weight::Medium, 11.5f) + 15;
         if (chip(Ui::Id("gal.cat", k), Rect(tx, y, w, kTabsH - 6), wg::CatName(k), galleryCat == k)) galleryCat = k, galleryScroll = 0;
-        tx += w + 6;
+        tx += w + 5;
     }
     y += kTabsH + 2;
     D2D1_RECT_F grid = {r.left - 6, y, r.right + 6, r.bottom};
     std::vector<int> kinds;
-    for (int k = 0; k < kWgCount; ++k)
-        if (k != kWgRetired && k != kWgApps && (galleryCat == wg::kCatAll || wg::Info(k).cat == galleryCat)) kinds.push_back(k);
+    auto found = [&](const wg::Meta& m) { // what's typed, anywhere in its name or what it says of itself
+        if (draft.empty()) return true;
+        auto has = [&](const wchar_t* text) {
+            std::wstring hay = text, needle = draft;
+            CharLowerBuffW(hay.data(), (DWORD)hay.size());
+            CharLowerBuffW(needle.data(), (DWORD)needle.size());
+            return hay.find(needle) != std::wstring::npos;
+        };
+        return has(m.name) || has(m.about);
+    };
+    for (int k = 0; k < kWgFaces + faces::Count(); ++k) {
+        if (k == kWgRetired || k == kWgApps) continue;
+        if (IsFace(k) && faces::Info(k - kWgFaces).anotherFace) continue; // the dock has its own, richer one
+        if ((!draft.empty() || galleryCat == wg::kCatAll || wg::Info(k).cat == galleryCat) && found(wg::Info(k))) kinds.push_back(k); // a search looks everywhere
+    }
     int rows = ((int)kinds.size() + kGalCols - 1) / kGalCols;
     float maxScroll = (std::max)(0.0f, rows * (kCardH + kGalGap) - Height(grid));
     if (float n = ui.Wheel(grid); n != 0) galleryScroll = (std::clamp)(galleryScroll - n * (kCardH + kGalGap) * 0.6f, 0.0f, maxScroll);

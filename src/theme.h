@@ -7,6 +7,7 @@ struct Seed {
     int look = 0; // appearance: 0 dark (default), 1 light, 2 glass, 3 custom, 5 starfall
     int rgb = -1; // the exact color this came from, if any: the custom look keeps it as the accent
     int bg = 0x121826; // custom look: the panel's background, 0xRRGGBB
+    int tint = -1; // glass: what it's tinted with, 0xRRGGBB; -1 the plain dark glass
 };
 
 struct Theme {
@@ -31,5 +32,10 @@ Seed FromCol(Color c);
 float Luma(Color c); // relative luminance, 0 black .. 1 white
 Theme Lift(const Theme& t); // accent leaned toward the ink: controls that read over a glow of their own color
 Seed FromBmp(IWICBitmapSource* source);
+float BmpLuma(IWICBitmapSource* source); // its average brightness, 0..1
 std::wstring WallPath();
+void SetContrast(bool on); // every look comes out in windows' high contrast colors, or strong plain ones
+bool Contrast();
+bool TintIsPale(int tint); // that tint wants black ink
+Theme ClearInk(const Theme& t, float dark); // the dock with nothing behind it: all one ink, 0 white .. 1 black
 }

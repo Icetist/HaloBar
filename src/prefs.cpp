@@ -51,16 +51,22 @@ bool IslandInstalled() {
     return FindWindowW(L"AstraeusHost", nullptr) != nullptr; // a portable copy, running right now
 }
 
-Look IslandLook() {
+Look IslandLook(bool notOnDesktop) {
     Look l;
-    l.look = Read(kIslandKey, L"Appearance", 0);
+    bool apps = notOnDesktop && Read(kIslandKey, L"AppsTheme", 0) != 0;
+    auto theme = [apps](const wchar_t* name, int fallback) { // following it, each of our themes wears its match
+        int v = Read(kIslandKey, name, fallback);
+        return apps ? Read(kIslandKey, (std::wstring(name) + L"Apps").c_str(), v) : v; // never set there: its desktop value
+    };
+    l.look = theme(L"Appearance", 0);
     l.followsBar = l.look == 4;
-    if (!l.followsBar) l.bgOpacity = (std::clamp)(Read(kIslandKey, L"BgOpacity", 100), Settings::kMinOpacity, 100); // clamped as island clamps it; 4 follows the bar back: the default ends the loop
-    if (l.look < 0 || (l.look > 3 && l.look != kIslandStarfall)) l.look = 0; // a look this build doesn't know, or 4 (following us): the default one
-    l.accentFixed = Read(kIslandKey, L"AccentMode", 0) == 1;
-    l.accentHex = Read(kIslandKey, L"AccentHex", l.accentHex) & 0xFFFFFF; // rgb only, any stray alpha byte dropped
-    l.customBg = Read(kIslandKey, L"CustomBg", l.customBg) & 0xFFFFFF;
-    l.glassBlur = Read(kIslandKey, L"GlassBlur", l.glassBlur);
+    if (!l.followsBar) l.bgOpacity = (std::clamp)(theme(L"BgOpacity", 100), Settings::kMinOpacity, 100); // clamped as island clamps it; 4 follows the bar back: the default ends the loop
+    if (l.look < 0 || (l.look > 3 && l.look != kIslandStarfall && l.look != Settings::kClear)) l.look = 0; // a look this build doesn't know, or 4 (following us): the default one
+    l.accentFixed = theme(L"AccentMode", 0) == 1;
+    l.accentHex = theme(L"AccentHex", l.accentHex) & 0xFFFFFF; // rgb only, any stray alpha byte dropped
+    l.customBg = theme(L"CustomBg", l.customBg) & 0xFFFFFF;
+    l.glassBlur = theme(L"GlassBlur", l.glassBlur);
+    l.glassTint = (std::clamp)(theme(L"GlassTint", -1), -1, 0xFFFFFF);
     if (l.glassBlur < 0 || l.glassBlur > 100) l.glassBlur = 100;
     int rm = Read(kIslandKey, L"ReduceMotion", -1);
     if (rm < 0) { // island not set up: follow windows
@@ -78,12 +84,16 @@ Settings Load() {
         int v = Read(kBarKey, name, fallback);
         return v < lo || v > hi ? fallback : v;
     };
-    s.look = num(L"Look", s.look, -1, 3); // -1 follows island
+    s.look = Read(kBarKey, L"Look", s.look) == Settings::kClear ? Settings::kClear : num(L"Look", s.look, -1, 3); // -1 follows island
     s.blur = num(L"GlassBlur", s.blur, 0, 100);
+    s.glassTint = num(L"GlassTint", s.glassTint, -1, 0xFFFFFF);
     s.opacity = num(L"Opacity", s.opacity, Settings::kMinOpacity, 100);
     s.accent = num(L"Accent", s.accent, -1, 1);
     s.accentHex = Read(kBarKey, L"AccentHex", s.accentHex) & 0xFFFFFF;
     s.customBg = Read(kBarKey, L"CustomBg", s.customBg) & 0xFFFFFF;
+    s.appsTheme = num(L"AppsTheme", 0, 0, 1);
+    s.otherSet = {Read(kBarKey, L"LookApps", s.look) == Settings::kClear ? Settings::kClear : num(L"LookApps", s.look, -1, 3), num(L"AccentApps", s.accent, -1, 1), Read(kBarKey, L"AccentHexApps", s.accentHex) & 0xFFFFFF,
+                  Read(kBarKey, L"CustomBgApps", s.customBg) & 0xFFFFFF, num(L"GlassBlurApps", s.blur, 0, 100), num(L"OpacityApps", s.opacity, Settings::kMinOpacity, 100), num(L"GlassTintApps", s.glassTint, -1, 0xFFFFFF)}; // never set: the desktop's
     s.size = num(L"Size", s.size, 0, 2);
     s.room = num(L"Room", s.room, 0, 1);
     s.widgets = Read(kBarKey, L"Widgets", s.widgets) & 0x3FF;
@@ -105,6 +115,11 @@ Settings Load() {
     s.startIcon = num(L"StartIcon", s.startIcon, 0, 1); // the old sparkle face reads as halobar's
     s.hoverPlay = num(L"HoverPlay", s.hoverPlay, 0, 1);
     s.date = num(L"Date", s.date, 0, 1);
+    s.a11yContrast = num(L"A11yContrast", s.a11yContrast, Settings::kContrastAuto, Settings::kContrastOff);
+    s.a11yFollow = num(L"A11yFollowText", s.a11yFollow, 0, 1);
+    s.a11yText = num(L"A11yText", s.a11yText, Settings::kTextMin, Settings::kTextMax);
+    s.a11yKeys = num(L"A11yKeys", s.a11yKeys, 0, 1);
+    s.a11yReader = num(L"A11yReader", s.a11yReader, 0, 1);
     s.clock24 = num(L"Clock24", s.clock24, -1, 1); // -1 follows the windows region format
     return s;
 }
@@ -138,7 +153,21 @@ void SaveShared(const wchar_t* name, int value) { // the one place halobar write
     RegSetKeyValueW(HKEY_CURRENT_USER, kIslandKey, name, REG_DWORD, &v, sizeof(v));
 }
 
+namespace {
+bool saveApps = false;
+}
+
+void SaveForApps(bool on) { saveApps = on; }
+
 void SaveNum(const wchar_t* name, int v) {
+    std::wstring apps;
+    if (saveApps)
+        for (const wchar_t* k : {L"Look", L"Accent", L"AccentHex", L"CustomBg", L"GlassBlur", L"Opacity", L"GlassTint"})
+            if (!wcscmp(name, k)) {
+                apps = std::wstring(name) + L"Apps";
+                name = apps.c_str();
+                break;
+            }
     DWORD value = (DWORD)v;
     RegSetKeyValueW(HKEY_CURRENT_USER, kBarKey, name, REG_DWORD, &value, sizeof(value)); // creates the key if missing
 }

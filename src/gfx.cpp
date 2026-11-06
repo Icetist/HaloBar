@@ -435,6 +435,7 @@ IDWriteTextLayout* Canvas::Layout(const std::wstring& s, IDWriteTextFormat* f, f
 }
 
 void Canvas::NewFrame() {
+    words.clear();
     ++frame;
     if (frame % 120 != 0) return; // sweep every 120 frames, not every frame
     for (auto it = layouts.begin(); it != layouts.end();) {
@@ -484,8 +485,18 @@ void Canvas::StrokeGeo(ID2D1Geometry* geometry, Color c, float width) {
     rt->DrawGeometry(geometry, Brush(c), width, rndCaps.Get());
 }
 
+void Canvas::Say(const std::wstring& s, int glyph, const D2D1_RECT_F& r) {
+    D2D1::Matrix3x2F m, inv = *D2D1::Matrix3x2F::ReinterpretBaseType(&wordBase);
+    rt->GetTransform(&m);
+    if (!inv.Invert()) inv = D2D1::Matrix3x2F::Identity();
+    D2D1::Matrix3x2F toDips = m * inv;
+    D2D1_POINT_2F a = toDips.TransformPoint({r.left, r.top}), b = toDips.TransformPoint({r.right, r.bottom});
+    words.push_back({s, glyph, {a.x, a.y, b.x, b.y}});
+}
+
 void Canvas::Text(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, Align a) {
     if (s.empty()) return;
+    if (listening) Say(s, 0, r);
     IDWriteTextFormat* f = gfx::TextFmt(w, size, a);
     IDWriteTextLayout* l = f ? Layout(s, f, Width(r), Height(r), 0) : nullptr; // cached layout, no reshaping per frame
     if (l) rt->DrawTextLayout({r.left, r.top}, l, Brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP); // clip to rect
@@ -502,12 +513,14 @@ float Canvas::TextOnce(const std::wstring& s, const D2D1_RECT_F& r, Weight w, fl
 
 void Canvas::TextSp(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, float spacing, Align a) {
     if (s.empty()) return;
+    if (listening) Say(s, 0, r);
     IDWriteTextFormat* f = gfx::TextFmt(w, size, a);
     IDWriteTextLayout* l = f ? Layout(s, f, Width(r), Height(r), spacing) : nullptr;
     if (l) rt->DrawTextLayout({r.left, r.top}, l, Brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 void Canvas::Icon(int glyph, D2D1_POINT_2F center, float size, Color c, bool filled) {
+    if (listening) Say(L"", glyph, {center.x - size / 2, center.y - size / 2, center.x + size / 2, center.y + size / 2});
     wchar_t ch = (wchar_t)(glyph & 0xFFFF); // codepoints are bmp, fits one wchar
     bool sys = glyph >= glyph::kSys; // flagged: windows' segoe fluent icons, drawn a touch smaller to sit with ours
     IDWriteTextFormat* f = sys ? gfx::SysIconFmt(size * 0.82f) : gfx::IconFmt(size, filled);

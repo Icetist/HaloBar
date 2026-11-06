@@ -175,3 +175,5 @@ void Bar::DrawAgenda(const Theme& t, const D2D1_RECT_F& r, int y, int m, int d) 
         c.Text(e.title.empty() ? std::wstring(L"(No title)") : e.title, Rect(r.left + 12 + kTimeW, ry, Width(r) - 16 - kTimeW, kAgendaRow), Weight::Medium, 12, t.text);
     }
 }
+
+std::wstring Bar::ClipNow() const { return ClipText(hwnd); }

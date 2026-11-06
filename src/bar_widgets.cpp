@@ -6,6 +6,7 @@
 #include <netioapi.h>
 
 #include "bar.h"
+#include "duration.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <random>
 
+#include "feeds.h"
 #include "glyphs.h"
 #include "picker.h"
 #include "widgets.h"
@@ -101,10 +103,22 @@ void WriteUtf8(const std::wstring& path, const std::wstring& text) {
 
 namespace wg {
 
-const Meta& Info(int kind) { return kMeta[(std::clamp)(kind, 0, wg::kKinds - 1)]; }
+const Meta& Info(int kind) {
+    if (kind < wg::kKinds) return kMeta[(std::max)(kind, 0)];
+    static const std::vector<Meta> kFaces = [] { // the faces, in the gallery's terms
+        static const int kCats[faces::kCats] = {kCatClocks, kCatWeather, kCatWork, kCatSystem, kCatMedia, kCatMoney, kCatOnline, kCatMedia};
+        std::vector<Meta> out;
+        for (int i = 0; i < faces::Count(); ++i) {
+            const faces::Meta& f = faces::Info(i);
+            out.push_back({f.name, f.about, kCats[f.cat], f.glyph, f.sizes, f.defSize});
+        }
+        return out;
+    }();
+    return kFaces[(std::min)((size_t)(kind - wg::kKinds), kFaces.size() - 1)];
+}
 
 const wchar_t* CatName(int cat) {
-    static const wchar_t* const kNames[] = {L"All", L"Media & Files", L"Productivity", L"System", L"Tools"};
+    static const wchar_t* const kNames[] = {L"All", L"Media & Files", L"Productivity", L"System", L"Tools", L"Clocks", L"Weather", L"Money", L"Online"};
     return kNames[(std::clamp)(cat, 0, (int)kCatCount - 1)];
 }
 
@@ -144,7 +158,7 @@ void Bar::LoadSlots() {
         size_t e = s.find(L',', i);
         std::wstring part = s.substr(i, e == std::wstring::npos ? std::wstring::npos : e - i);
         int k = -1, z = 1;
-        if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgCount && k != kWgRetired && (Many(k) || !HasWg(k)))
+        if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgFaces + faces::Count() && k != kWgRetired && (Many(k) || !HasWg(k)))
             wgSlots.push_back({k, k == kWgSpace ? (std::clamp)(z, (int)kSpaceMin, (int)kSpaceMax) : (std::clamp)(z, 0, 2)}); // a space keeps its width
         if (e == std::wstring::npos) break;
         i = e + 1;
@@ -160,7 +174,7 @@ void Bar::LoadSlots() {
         wgSlots.insert(wgSlots.begin(), {kWgApps, 0});
         if (more) wgSlots.insert(wgSlots.begin() + 1, {kWgDivider, 0}); // where the fixed separator was
     }
-    focusMin = (std::clamp)(prefs::ReadNum(L"WgFocusMin", 25), 5, 120);
+    focusMin = (std::clamp)(prefs::ReadNum(L"WgFocusMin", 25), 1, duration::kMaxSec / 60); // any length since it can be typed
     waterGoal = (std::clamp)(prefs::ReadNum(L"WgWaterGoal", 8), 1, 30);
     fahrenheit = prefs::ReadNum(L"WgFahrenheit", 0) != 0;
     folderPick = (std::clamp)(prefs::ReadNum(L"WgFolder", 0), 0, 4);
@@ -178,19 +192,20 @@ void Bar::SyncWidgets() {
     std::fill(std::begin(fitW), std::end(fitW), 0.0f); // a widget added or resized: measured afresh
     SyncFit();
     SyncClip(); // the history loads, listens and takes its quick key only while the widget is in a dock
-    if (HasWg(kWgStats) && !statSrc && !statMaking) { // opening the performance counters can take seconds: never on the ui thread
+    SyncFaces();
+    if (NeedsStats() && !statSrc && !statMaking) { // opening the performance counters can take seconds: never on the ui thread
         statMaking = true;
         std::thread([h = hwnd] {
             auto* src = new sys::StatSrc();
             src->Sample(); // the first sample only sets the baseline
             if (!PostMessageW(h, WM_APP_STATSRC, 0, (LPARAM)src)) delete src;
         }).detach();
-    } else if (!HasWg(kWgStats)) {
+    } else if (!NeedsStats()) {
         statSrc.reset();
     }
-    if (HasWg(kWgStats) || HasWg(kWgNet)) SetCoalescableTimer(hwnd, kStatsTimer, 2000, nullptr, 500); // both read every 2 s while in sight
+    if (NeedsStats() || HasWg(kWgNet)) SetCoalescableTimer(hwnd, kStatsTimer, 2000, nullptr, 500); // both read every 2 s while in sight
     else KillTimer(hwnd, kStatsTimer);
-    if (HasWg(kWgWeather)) RefreshWx(); // cached half an hour: a no-op most of the time
+    if (HasWg(kWgWeather) || !FaceKinds().empty()) RefreshWx(); // cached half an hour: a no-op most of the time
     if (HasWg(kWgWater)) water = prefs::ReadNum(L"WaterDay", 0) == WgToday() ? prefs::ReadNum(L"WaterCount", 0) : 0; // a new day starts at none
     if ((HasWg(kWgNotes)) && !noteLoaded) noteLoaded = true, note = ReadUtf8(LocalFile(L"notes.txt"));
     if ((HasWg(kWgTodo) || HasWg(kWgHabit)) && !listsLoaded) { // read once: the panels write them back
@@ -216,6 +231,69 @@ void Bar::SyncWidgets() {
     if (!HasWg(kWgPhoto)) photoSrc.Reset(), photoBmp.Reset(); // gone: its pixels go too
     if (HasWg(kWgFiles) && files.empty()) LoadFiles(L""); // the newest download, for the medium and large faces
     if (HasWg(kWgDrives) && drives.empty()) LoadDrives(); // the count on its face
+}
+
+bool Bar::NeedsStats() const {
+    if (HasWg(kWgStats)) return true;
+    for (const WgSlot& s : wgSlots) {
+        if (!IsFace(s.kind)) continue;
+        const char* key = faces::Info(s.kind - kWgFaces).key;
+        if (!strcmp(key, "sys.cpu") || !strcmp(key, "sys.ram") || !strcmp(key, "sys.temp")) return true;
+    }
+    return false;
+}
+
+std::vector<int> Bar::FaceKinds() const {
+    std::vector<int> out;
+    for (const WgSlot& s : wgSlots)
+        if (IsFace(s.kind)) out.push_back(s.kind - kWgFaces);
+    return out;
+}
+
+faces::Host Bar::FaceHost() {
+    faces::Host h;
+    h.cpu = stats.cpu, h.mem = stats.mem, h.gpu = stats.gpu, h.memUsedGb = stats.memUsedGb, h.memTotalGb = stats.memTotalGb;
+    h.netDown = netDown, h.netUp = netUp;
+    h.wxValid = wx.valid, h.wxDay = wx.isDay, h.fahrenheit = fahrenheit, h.h24 = cfg.clock24 == 1;
+    h.tempC = wx.tempC, h.highC = wx.highC, h.lowC = wx.lowC, h.wxCode = wx.code, h.place = wx.place;
+    h.nHours = (std::min)(wx.nHours, 8), h.nDays = (std::min)(wx.nDays, 5);
+    for (int i = 0; i < h.nHours; ++i) h.hours[i] = {wx.hours[i].hour, wx.hours[i].code, wx.hours[i].tempC, wx.hours[i].day};
+    for (int i = 0; i < h.nDays; ++i) h.days[i] = {wx.days[i].y, wx.days[i].m, wx.days[i].d, wx.days[i].code, wx.days[i].hiC, wx.days[i].loC};
+    h.hasTrack = hasTrack, h.playing = hasTrack && track.playing, h.title = track.title, h.artist = track.artist;
+    h.progress = hasTrack ? track.Progress() : 0;
+    h.bright = brightPct;
+    h.ctx = this;
+    h.setBright = [](void* self, int percent) {
+        Bar* b = static_cast<Bar*>(self);
+        b->bright.Set(percent);
+        b->brightPct = percent;
+        b->Redraw();
+    };
+    return h;
+}
+
+void Bar::SyncFaces() { // what every dock's faces read from outside: nothing is fetched for a widget that isn't there
+    std::vector<int> all;
+    bool wantBright = false;
+    for (Bar* b : Docks()) {
+        for (int k : b->FaceKinds()) {
+            all.push_back(k);
+            wantBright = wantBright || !strcmp(faces::Info(k).key, "sys.bright");
+        }
+    }
+    if (!all.empty()) feeds::Start(hwnd, WM_APP_FEEDS, L"HaloBar");
+    feeds::Want(faces::Feeds(all));
+    if (wantBright && brightPct < 0) bright.ReadAsync(hwnd, WM_APP_BRIGHT);
+    if (!wx.place.empty() && feeds::Setting("sky.place") != wx.place) feeds::SetSetting("sky.place", wx.place);
+    FaceTick();
+}
+
+void Bar::FaceTick() {
+    KillTimer(hwnd, kFaceTimer);
+    int ms = faces::NextMs(FaceKinds(), FaceHost());
+    if (ms <= 0) return;
+    constexpr int kUnseenMs = 5000; // hidden: only a running timer's bell needs a look
+    SetCoalescableTimer(hwnd, kFaceTimer, StatsUnseen() ? (std::max)(ms, kUnseenMs) : ms, nullptr, ms >= 5000 ? 1000 : 50);
 }
 
 void Bar::WidgetTick() { // every 2 s, only while the dock or a panel shows: unseen numbers aren't read
@@ -316,7 +394,38 @@ void Bar::LoadFiles(const std::wstring& dirIn) { // the newest few in a folder, 
 }
 
 void Bar::WgChar(wchar_t ch) {
+    if (IsFace(wgKind)) {
+        if (!faces::Char(wgKind - kWgFaces, ch) && ch == VK_ESCAPE) return SetPanel(Panel::None);
+        Redraw();
+        return;
+    }
+    if (wgKind == kWgGallery && focusTyping) { // a custom focus length, not the search
+        if (ch == VK_ESCAPE) focusTyping = false, draftFocus.clear();
+        else if (ch == VK_BACK) {
+            if (!draftFocus.empty()) draftFocus.pop_back();
+        } else if (ch == VK_RETURN) {
+            if (int seconds = duration::Parse(draftFocus)) { // whole minutes, as the widget counts them
+                focusMin = (std::max)(1, (seconds + 30) / 60);
+                prefs::SaveNum(L"WgFocusMin", focusMin);
+                focusTyping = false, draftFocus.clear();
+            }
+        } else if (ch >= 32 && draftFocus.size() < duration::kMaxChars) {
+            draftFocus += ch;
+        }
+        Redraw();
+        return;
+    }
     if (ch == VK_ESCAPE) return SetPanel(Panel::None);
+    if (wgKind == kWgGallery) { // what's typed searches the catalogue
+        if (ch == VK_BACK) {
+            if (!draft.empty()) draft.pop_back();
+        } else if (ch >= 32 && draft.size() < 40) {
+            draft += ch;
+        }
+        galleryScroll = 0;
+        Redraw();
+        return;
+    }
     std::wstring& s = wgKind == kWgNotes ? note : draft;
     if (ch == VK_BACK) {
         if (!s.empty()) s.pop_back();
@@ -399,6 +508,7 @@ void Bar::OpenWidget(int w, float x) {
     }
     if (w == kWgNotes && !noteLoaded) noteLoaded = true, note = ReadUtf8(LocalFile(L"notes.txt"));
     draft.clear();
+    if (IsFace(w)) faces::OpenPanel(w - kWgFaces);
     wgKind = w;
     Anchor(x, false); // over the dock, from the widget that asked
     SetPanel(Panel::Widget);
@@ -409,15 +519,18 @@ void Bar::StartEdit() {
     if (editing) return SetPanel(Panel::None); // asked again: done
     wgKind = kWgGallery;
     wgSel = -1, galleryScroll = 0;
+    draft.clear();
     Anchor(W / 2, false);
     SetPanel(Panel::Widget);
     editing = true;
+    SetForegroundWindow(hwnd); // typing searches the catalogue
 }
 
 // ---- the group in the dock ----
 
 void Bar::DrawWidgets(const Theme& t, float x, float top) { // x: where along the dock they start; top: across it
     Canvas& c = ui.C();
+    if (editing || !FaceKinds().empty()) faceHost = FaceHost();
     auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) { // the widget's name, on a small pill beside it
         D2D1_RECT_F r = TipRect(over, (std::min)(TextW(name, Weight::Medium, 12) + 20, 300.0f));
         c.Fill(r, 12, t.bg.Alpha(1).Mix(t.text, 0.08f));

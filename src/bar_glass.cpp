@@ -228,11 +228,41 @@ float Brightness(const RECT& r) { // average luminance 0..1 of what's on screen 
 
 }
 
+void Bar::SampleInk() {
+    if (full || sink > 0.5f || AnyOpen()) return; // nobody sees the ink, or a panel would be measured instead of the page; the next look reads
+    constexpr float kToBlack = 0.52f, kToWhite = 0.42f; // apart, so a mid gray wallpaper doesn't flip it back and forth
+    constexpr float kBeside = 160, kOff = 6; // how far along the screen it looks, and its gap from the dock
+    auto ink = [&](float lum, float was) { return was > 0.5f ? (lum < kToWhite ? 0.0f : 1.0f) : (lum > kToBlack ? 1.0f : 0.0f); };
+    float top = shadeTop, bot = shadeBot;
+    LONG band = (LONG)std::lround(8 * scale), q = winPxW / 4;
+    if (TopOn()) { // the top bar spans the screen: just below it
+        LONG y = monitor.top + (LONG)std::lround(kBarH * scale);
+        top = ink(Brightness({monitor.left + q, y, monitor.right - q, y + band}), top);
+    }
+    POINT a = ToScreen({wegR.left, wegR.top}), b = ToScreen({wegR.right, wegR.bottom}); // at the dock's own height, on both sides: right under it would only read its own icons
+    LONG off = (LONG)std::lround(kOff * scale), reach = (LONG)std::lround(kBeside * scale);
+    RECT one{}, two{};
+    if (Vert()) {
+        one = {a.x, (std::max)(monitor.top, a.y - off - reach), b.x, a.y - off};
+        two = {a.x, b.y + off, b.x, (std::min)(monitor.bottom, b.y + off + reach)};
+    } else {
+        one = {(std::max)(monitor.left, a.x - off - reach), a.y, a.x - off, b.y};
+        two = {b.x + off, a.y, (std::min)(monitor.right, b.x + off + reach), b.y};
+    }
+    bool hasOne = one.right > one.left && one.bottom > one.top, hasTwo = two.right > two.left && two.bottom > two.top;
+    float lum = hasOne && hasTwo ? (Brightness(one) + Brightness(two)) / 2 : hasOne ? Brightness(one) : hasTwo ? Brightness(two) : Brightness({monitor.left + q, a.y - band - off, monitor.right - q, a.y - off}); // a dock the screen's whole width: just above it
+    bot = ink(lum, bot);
+    if (top == shadeTop && bot == shadeBot) return;
+    shadeTop = top, shadeBot = bot;
+    Redraw();
+}
+
 void Bar::SampleShade() { // two thin bands beside the bars, never under them: what shows there is what the glass sits over
+    if (Clear()) return SampleInk();
     float top = 0, bot = 0;
     if (LookNow() == 2 && (full || sink > 0.5f)) return; // tucked or behind a game: a screen read for nobody; the next tick after it's back reads
     if (LookNow() == 2 && !AnyOpen() && !full) { // an open panel would be measured instead of the page
-        auto k = [](float l) { return anim::Clamp01((l - 0.42f) / 0.38f); }; // dark and colourful stay clear, bright pages get a deeper tint
+        auto k = [this](float l) { return TintFor(l); };
         LONG band = (LONG)std::lround(8 * scale), y = monitor.top + (LONG)std::lround(kBarH * scale), q = winPxW / 4; // thin and only the middle half: a screen read costs by its size
         if (TopOn()) top = k(Brightness({monitor.left + q, y, monitor.right - q, y + band}));
         LONG b = monitor.bottom - (LONG)std::lround((kShelfH + 4) * scale);
@@ -244,11 +274,11 @@ void Bar::SampleShade() { // two thin bands beside the bars, never under them: w
 }
 
 void Bar::SampleBehind() { // read once as a panel opens, before the island covers that spot; never per frame
-    if (LookNow() != 2) {
+    if (!Frosted()) {
         glassShade = 0;
         return;
     }
     LONG half = (LONG)(kSetW * scale / 2), cx = (monitor.left + monitor.right) / 2;
     RECT r = {cx - half, monitor.bottom - winPxH, cx + half, monitor.bottom - barPx - 2}; // where panels grow, above the row
-    glassShade = anim::Clamp01((Brightness(r) - 0.42f) / 0.38f); // dark and colourful stay clear, bright pages get a deeper tint
+    glassShade = TintFor(Brightness(r));
 }

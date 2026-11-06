@@ -121,6 +121,10 @@ float Bar::WidgetW(int kind, int size) const {
     if (kind == kWgMedia && Vert()) return size > 0 ? 168.0f : 76.0f; // a column: the song runs along it as astraeus' side pill, its title turned when medium or large
     if (Vert()) return kIcon; // a column: every widget at its small face
     if (size <= 0 || size > 2 || !(wg::Info(kind).sizes & (1 << size))) return kIcon; // small, or a widget that only comes small
+    if (IsFace(kind)) {
+        const faces::Meta& f = faces::Info(kind - kWgFaces);
+        return size == 1 ? f.wMedium : f.wLarge;
+    }
     if ((kind == kWgNet || kind == kWgBattery || kind == kWgWeather) && fitW[kind] > 0) return (std::max)(kIcon, fitW[kind]); // sized to its words
     static const float kMedium[kWgCount] = {176, 40, 82, 76, 96, 76, 136, 92, 40, 40, 136, 136, 156, 136, 92, 112, 136, 136, 136, 40, 136, 104, 84, 124, 116, 80};
     static const float kLarge[kWgCount] = {236, 40, 184, 176, 176, 176, 196, 156, 40, 40, 196, 196, 216, 196, 160, 184, 196, 196, 196, 40, 196, 160, 140, 196, 184, 132};
@@ -150,6 +154,7 @@ std::wstring Bar::WgTip(int kind) const {
 void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool live) {
     Canvas& c = ui.C();
     if (size < 0 || size > 2 || !(wg::Info(kind).sizes & (1 << size))) size = 0; // a space carries its width here, not a face size
+    if (IsFace(kind)) return faces::Draw(c, t, kind - kWgFaces, size, r, faceHost);
     float cx = (r.left + r.right) / 2, mid = (r.top + r.bottom) / 2;
     bool tiny = size == 0, large = size == 2;
     double now = (double)GetTickCount64() / 1000;
@@ -477,12 +482,13 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
         if (mh.clicked && spk) spk->SetMuted(!muteShown), muteShown = !muteShown;
         D2D1_RECT_F rail = Rect(ib.right + 4, large ? mid - 8 : mid - 2, r.right - kPad - ib.right - 4, 4);
         float v = volShown;
-        if (live && ui.Slider(Ui::Id("wg.vol"), Inset(rail, -2, -8), v, false) && spk) spk->SetLevel(v), volShown = v;
+        constexpr float kVolThumb = 5;
+        if (live && ui.Slider(Ui::Id("wg.vol"), Inset(rail, kVolThumb, -8), v, false) && spk) spk->SetLevel(v), volShown = v;
         if (live)
             if (float n = ui.Wheel(r); n != 0 && spk) volShown = anim::Clamp01(spk->Level() + n * 0.02f), spk->SetLevel(volShown);
         c.Fill(rail, 2, t.text.Alpha(0.14f));
         c.Fill(Rect(rail.left, rail.top, (std::max)(4.0f, Width(rail) * volShown), 4), 2, muteShown ? t.textDim : t.accentHi);
-        c.Dot({rail.left + Width(rail) * volShown, rail.top + 2}, 5, t.text);
+        c.Dot({w::ThumbAt(rail.left, rail.right, kVolThumb, volShown), rail.top + 2}, kVolThumb, t.text);
         if (large) {
             std::wstring out;
             for (const auto& o : outs)
@@ -558,6 +564,19 @@ void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool 
 }
 
 void Bar::WgClick(int kind, bool right, float cx) {
+    if (IsFace(kind)) {
+        switch (faces::Click(kind - kWgFaces, right, faceHost)) {
+        case faces::Act::kPanel: OpenWidget(kind, cx); break;
+        case faces::Act::kPlay: Player().TogglePlay(); break;
+        case faces::Act::kNext: Player().Next(); break;
+        case faces::Act::kPrev: Player().Previous(); break;
+        case faces::Act::kTray: Anchor(cx, false), SetPanel(trayOpen ? Panel::None : Panel::Tray); break;
+        default: break;
+        }
+        FaceTick(); // a timer or stopwatch just started: its ticks start with it
+        Redraw();
+        return;
+    }
     double now = (double)GetTickCount64() / 1000;
     switch (kind) {
     case kWgBin:

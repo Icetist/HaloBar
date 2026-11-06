@@ -30,6 +30,8 @@
 #include "apps.h"
 #include "calendar.h"
 #include "clips.h"
+#include "faces.h"
+#include "access.h"
 #include "toggles.h"
 
 #include <unordered_set>
@@ -67,6 +69,7 @@ constexpr UINT WM_APP_CALMENU = WM_APP + 16; // the connected calendars' menu, o
 constexpr UINT WM_APP_RESTYLE = WM_APP + 13; // wparam 1: re-place too. a setting that rebuilds the device, applied after the frame that clicked it
 constexpr UINT WM_APP_CLIP = WM_APP + 27; // wparam: a clipboard picture whose files are written; lparam: a link's fetched title
 constexpr UINT WM_APP_CLIPTITLE = WM_APP + 28;
+constexpr UINT WM_APP_FEEDS = WM_APP + 60; // a widget's feed has something new
 constexpr UINT WM_APP_NOTIFS = WM_APP + 10; // lparam: a new std::vector<sys::Notif>*, read off the ui thread
 
 struct Swell { // soft light that rises from the floor and swells with the music, as on astraeus island's media page
@@ -143,7 +146,7 @@ public:
     static constexpr float kSheetW = 380; // and into an app's sheet
     static constexpr float kLaunchW = 800; // and into the apps menu
     static constexpr float kQsW = 460, kCalW = 720, kNotifW = 360; // and into quick settings, or the clock: notifications beside the calendar
-    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32, kClipPasteTimer = 33, kClipSaveTimer = 34;
+    static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32, kClipPasteTimer = 33, kClipSaveTimer = 34, kThemeTimer = 35, kFaceTimer = 97;
     static constexpr UINT kTitleMs = 200; // title changes: at most five top bar frames a second
     static constexpr UINT kUpdateFirstMs = 60 * 1000, kUpdateEveryMs = 6 * 60 * 60 * 1000; // a minute after start, then a few times a day
     static constexpr UINT kCalWaitMs = 5 * 60 * 1000;
@@ -174,6 +177,7 @@ private:
     bool TopOn() const { return false; } // the top bar is retired: its status sits at the dock's end, the top edge is astraeus'
     bool TopAuto() const { return false; } // it slips up out of the way while a window covers it
     void SampleShade(); // how bright the screen is around the top bar and the dock: glass smokes over white pages
+    void SampleInk(); // clear: black or white ink for each bar, from what's on screen beside it
     bool Unseen() const { return full; } // behind a fullscreen app: the toolbar is otherwise always in sight
     bool Hidden() const { return full || (sink > 0.999f && Grown() < 0.5f && !AnyOpen()); } // nothing of this dock on screen: tucked away with nothing risen, or behind a fullscreen app
     bool StatsUnseen() const { return full || (sink > 0.5f && !wgOpen); } // the load and network numbers can't be seen: not read
@@ -200,6 +204,8 @@ private:
     void WinLogo(D2D1_POINT_2F c, float size, Color top, Color bottom); // windows' four panes, drawn: the icon font has no logo
     float LaunchRise() const; // bar_launch.cpp: the app launcher
     void OpenLauncher();
+    void SetAccessCard(const Theme& t, const D2D1_RECT_F& r);
+    void SetReport(const Theme& t, const D2D1_RECT_F& r);
     void OnApps(WPARAM step, LPARAM lp);
     void LoadApps(bool withIcons);
     void LaunchKey(WPARAM vk);
@@ -232,7 +238,18 @@ private:
     void Idle(); // still for a while: efficiency mode, caches handed back
     void Trim(); // still for long, or a game in front: launcher icons, d2d's cache and idle pages go back
 
-    int LookNow() const; // the look in use: 0 dark, 1 light, 2 glass, 3 island's custom
+    int LookNow() const; // the look in use: 0 dark, 1 light, 2 glass, 3 island's custom, kClear
+    bool appHere = false; // a window is maximized on this screen
+    int setNow = 0, setTab = -1; // the theme in the live fields: 0 the desktop's, 1 over apps; the one settings is editing, -1 whichever applies
+    void SyncThemeSet(); // the theme that should be live now
+    void SyncAppHere(); // is a window maximized on this screen: asked of windows itself, the app list lags a new window
+    bool Frosted() const { return LookNow() == 2 || (Clear() && !glassFailed); } // the blur's tree is up: glass, or clear's panels
+    int TintNow() const { return Clear() ? (wallLight ? 0xFFFFFF : -1) : cfg.look == prefs::Settings::kFollow ? look.glassTint : cfg.glassTint; } // clear's panels take the wallpaper's side; following astraeus, its tint
+    bool DarkInk() const { return Frosted() && theme::TintIsPale(TintNow()); } // glass, turned over by a pale tint
+    Color Tint(float k) const; // what keeps the ink readable where the page fights it: smoke, or frost, in the tint's color
+    float TintFor(float lum) const { return anim::Clamp01(DarkInk() ? (0.58f - lum) / 0.38f : (lum - 0.42f) / 0.38f); } // white ink struggles on bright, black ink on dark; colourful middles stay clear either way
+    bool Clear() const { return LookNow() == prefs::Settings::kClear; } // the dock and top bar paint nothing but ink; panels are glass, to be read over anything
+    const Theme* inkNow = nullptr; // clear: the ink of the bar being drawn, for what doesn't get a theme handed to it
     float WegRadius() const { return kWegRadius; }
     float CardRadius() const { return kCardRadius; }
     float TileRadius() const { return kTileRadius; }
@@ -242,12 +259,27 @@ private:
     float Blur() const;
     bool OwnOpacity() const { return cfg.look != prefs::Settings::kFollow || !islandHere; } // following island: its opacity, as its look
     float Opacity() const { return (OwnOpacity() ? cfg.opacity : look.bgOpacity) / 100.0f; }
-    Color Body(const Theme& t) const { return t.glass ? t.bg : t.bg.Alpha(Opacity()); } // the material's body: the solid looks let the desktop through, glass is the blur's
+    Color Body(const Theme& t) const { return t.glass || theme::Contrast() || Clear() ? t.bg : t.bg.Alpha(Opacity()); } // the material's body: the solid looks let the desktop through, glass is the blur's
     static constexpr float kZoomMax = 1.12f; // large: the surface is made this tall, so a size change never rebuilds it
-    float Zoom() const { return cfg.size == 0 ? 0.9f : cfg.size == 2 ? kZoomMax : 1.0f; }
+    float Zoom() const { float base = cfg.size == 0 ? 0.9f : cfg.size == 2 ? kZoomMax : 1.0f; return base * TextZoom(base); }
+    float TextZoom(float base) const; // the text size on top of the size setting, as far as settings still fit this screen
+    int TextPct() const; // the larger of the size picked here and windows'
+    bool HighContrast() const;
+    void SetAccess(int prefs::Settings::*field, const wchar_t* name, int value); // an accessibility choice, in every dock
+    static void ApplyAccess(); // windows' high contrast and text size, and ours, reach every dock
+    bool KeyNav(WPARAM key, LPARAM lp); // tab, enter and the arrows, in a panel the keyboard opened; true if it was for them
+    void EnterKeys(HWND back); // the keyboard moves into an open panel
+    void LeaveKeys(); // and back to the app it came from
+    bool panelKeys = false;
+    HWND panelBack = nullptr;
+    Access access; // what a screen reader sees
+    bool focusTyping = false; // a custom length for the focus timer, in edit mode
+    std::wstring draftFocus;
+    Theme MakeShell() const; // the bar's own palette: with astraeus' accent picked, exactly the accent astraeus shows
     Theme Make(Seed s) const; // a palette in the bar's current look
     void SyncLook();
     bool SyncWall(); // true if the wallpaper gave a new seed
+    bool SyncWallTone(); // clear: true if the wallpaper went from dark to light or back
     void SetShell(const Theme& t);
     void SetMedia(const Theme& t);
     bool StepTheme(float dt);
@@ -370,13 +402,21 @@ private:
 
     // bar_widgets.cpp, bar_wgdraw.cpp, bar_wgpanel.cpp: the dock's widgets, picked, ordered and sized in its edit mode; the song and the bin are widgets too
     enum Wg { kWgMedia, kWgBin, kWgWeather, kWgStats, kWgFocus, kWgWater, kWgClip, kWgPicker, kWgShot, kWgEmoji, kWgFiles, kWgNotes, kWgCalendar, kWgTodo,
-              kWgClock, kWgProgress, kWgToggles, kWgAudio, kWgSearch, kWgSwitch, kWgFolder, kWgNet, kWgBattery, kWgHabit, kWgRetired, kWgPhoto, kWgDivider, kWgApps, kWgDrives, kWgSpace, kWgCount }; // retired: once crypto, its number kept so saved layouts still line up
+              kWgClock, kWgProgress, kWgToggles, kWgAudio, kWgSearch, kWgSwitch, kWgFolder, kWgNet, kWgBattery, kWgHabit, kWgRetired, kWgPhoto, kWgDivider, kWgApps, kWgDrives, kWgSpace,
+              kWgFaces, kWgCount = kWgFaces + 120 }; // retired: once crypto, its number kept so saved layouts still line up. from kWgFaces on: the faces, by their place in that catalogue
+    static constexpr bool IsFace(int k) { return k >= kWgFaces && k < kWgCount; }
+    bool NeedsStats() const; // something in this dock reads the load
+    std::vector<int> FaceKinds() const; // the faces in this dock, by their own numbers
+    faces::Host FaceHost(); // what they need of what the dock already reads
+    faces::Host faceHost; // as of this frame
+    void SyncFaces(); // every dock's faces: what to fetch, and when to draw again
+    void FaceTick();
     static constexpr int kSpaceMin = 8, kSpaceMax = 480, kSpaceDef = 48, kSpaceStep = 16; // the space widget: its width in dips lives in its slot's size
     static bool Many(int kind) { return kind == kWgDivider || kind == kWgSpace; } // added again on every pick, never "in"
     int spaceFrom = 0; // the space's width as its edge was grabbed
     float spaceCap = 1e9f, spaceSlack = 0; // no space wider than the cap, so every app fits; the room still free for them to grow into
     std::vector<float> spaceWs; // Layout's scratch: each space's own width this frame
-    static constexpr int kWgGallery = 100; // wgKind while edit mode's gallery is up
+    static constexpr int kWgGallery = kWgCount; // wgKind while edit mode's gallery is up: past every widget, so it's never taken for one
     struct WgSlot {
         int kind = 0, size = 1; // size: 0 small, 1 medium, 2 large
     };
@@ -439,7 +479,7 @@ private:
     UINT clipPasteTries = 0;
     int clipTries = 0; // the clipboard was busy: read again shortly, a few times
     float clipScroll = 0, clipSetupScroll = 0, clipAnchor = 0; // clipAnchor: the widget's middle along the dock, where the quick key opens the panel
-    bool clipSetup = false, clipPeek = false, clipFollow = false, clipMenuUp = false, clipSlideHot = false;
+    bool clipSetup = false, clipPeek = false, clipFollow = false, clipMenuUp = false, clipSlideHot = false, clipWipeArmed = false;
     bool clipDragged = false; // an item was pulled out: its release isn't a click
     uint64_t clipNoteId = 0, clipDragId = 0; // the item a note is being typed for; the one about to be dragged out
     std::wstring clipNoteText;
@@ -464,7 +504,7 @@ private:
     std::vector<DriveRow> drives; // read when the drives widget opens or windows says a drive came or went
     void LoadDrives();
     static void Eject(wchar_t letter); // the shell's own eject: windows says when it's safe
-    static bool TypingKind(int k) { return k == kWgNotes || k == kWgTodo || k == kWgHabit || k == kWgClip; } // panels that take the keyboard
+    static bool TypingKind(int k) { return k == kWgNotes || k == kWgTodo || k == kWgHabit || k == kWgClip || k == kWgGallery || (IsFace(k) && faces::WantsKeys(k - kWgFaces)); } // panels that take the keyboard
     bool Typing() const { return wgOpen && TypingKind(wgKind); }
     int wgShown = -1; // the widget panel showing as SetPanel last left it
     void WgChar(wchar_t ch);
@@ -550,9 +590,18 @@ private:
     void SetMaterial(const Theme& t, const D2D1_RECT_F& r);
     void SetWheel(const Theme& t, D2D1_POINT_2F o, float r); // the custom look: accent and background, any color, off one wheel
     void SetChip(const Theme& t, const D2D1_RECT_F& r, int which, const wchar_t* name);
+    void SetThemeTabs(const Theme& t, const D2D1_RECT_F& r); // a whole second theme: on, and which one the page is editing
     void SetShade(const Theme& t, const D2D1_RECT_F& r);
+    void SetGlassRow(const Theme& t, const D2D1_RECT_F& r); // under the swatches, with glass picked: glass or clear, and its tint
     int& WheelColor(int which) { return which == 0 ? cfg.accentHex : cfg.customBg; }
     void StoreWheel(int which, int hex, bool done);
+    int hexFor = -1; // the color whose hex is being typed: 0 accent, 1 custom background
+    std::wstring hexEdit; // what's typed so far, without the #
+    HWND hexBack = nullptr; // the app that had the keyboard
+    void BeginHex(int which, int hex);
+    void EndHex(bool keep); // keep: applied if it's a color
+    void HexChar(wchar_t ch);
+    std::wstring ClipNow() const; // the clipboard's text
     int wheelPick = 0; // the handle being edited: 0 accent, 1 background
     void SetSize(const Theme& t, const D2D1_RECT_F& r);
     void SetRoom(const Theme& t, const D2D1_RECT_F& r);
@@ -835,6 +884,8 @@ private:
     ComPtr<IDCompositionVirtualSurface> surface; // keeps what was drawn: a frame updates only the part that changed
     Glass* glass = nullptr; // while the glass look is on: composition draws the blur and our surface over it
     bool glassFailed = false; // this pc has no backdrop blur: glass wears its dark twin
+    bool wallLight = false; // clear: the wallpaper is a light one
+    std::wstring wallToneKey; // the wallpaper that was read for it
     float glassShade = 0; // 0 over dark or colourful screens, 1 over a white page
     std::unique_ptr<Canvas> canvas;
     std::vector<RECT> regionNow;

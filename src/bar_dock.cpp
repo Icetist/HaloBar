@@ -89,6 +89,7 @@ void Bar::DrawDock(const Theme& t) { // the apps in the dock: wegX and wegS (Dra
         if (held) sx = (std::clamp)(Along(input.mouse) - w / 2, wegX[0], wegX[(size_t)n - 1]); // the held one follows the mouse, kept inside the dock
         D2D1_RECT_F r = Vert() ? Rect(wegR.left, sx, kWegH, w) : Rect(sx, rowTop, w, kWegH);
         Ui::Hit h = ui.Button(id, r);
+        ui.Name(a.name);
         if (h.hover && !dragging) hovered = i;
         if (ui.IsActive(id) && input.down && !dragging && std::fabs(Along(input.mouse) - Along(input.pressPos)) > kDragStart && (a.pinned || pinned > 0 || n > 1))
             dragging = true, dragFrom = i; // a lone unpinned app has nowhere to go, so it never drags

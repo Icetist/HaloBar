@@ -18,17 +18,27 @@
 
 void Census(UINT what, WPARAM sub, int add = 1); // bar.cpp: DebugLog's tally of what wakes the ui thread
 
+namespace sys {
+void LogonTask(const std::wstring& name, const std::wstring& exe, const std::wstring& args, bool on); // sys_logon.cpp
+}
+
 namespace {
 
-constexpr wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"; // per-user startup apps
+constexpr wchar_t kRunKey[] =L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"; // per-user startup apps
 constexpr wchar_t kApprovedKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"; // their on/off switch in task manager
+constexpr wchar_t kBootArg[] = L"--boot"; // on the startup entry and the logon task: a launch at sign-in
+constexpr wchar_t kLogonArg[] = L"--logon"; // on the logon task: it obeys task manager's switch
+constexpr DWORD kTaskGoneMs = 2000; // long enough for the scheduler to take the task away before this short-lived launch ends
 
-void StartWithWindows(const std::wstring& exe) { // a taskbar has to be there at sign-in: added once, re-pointed if the exe moved, never forced back on
+bool StartupAllowed() { // task manager's startup switch for us
     BYTE flags[12] = {};
     DWORD fsize = sizeof(flags);
-    if (RegGetValueW(HKEY_CURRENT_USER, kApprovedKey, L"HaloBar", RRF_RT_REG_BINARY, nullptr, flags, &fsize) == ERROR_SUCCESS && (flags[0] & 1))
-        return; // switched off in task manager's startup apps: the user's choice stands
-    std::wstring want = L"\"" + exe + L"\"";
+    return !(RegGetValueW(HKEY_CURRENT_USER, kApprovedKey, L"HaloBar", RRF_RT_REG_BINARY, nullptr, flags, &fsize) == ERROR_SUCCESS && (flags[0] & 1));
+}
+
+void StartWithWindows(const std::wstring& exe) { // a taskbar has to be there at sign-in: added once, re-pointed if the exe moved, never forced back on
+    if (!StartupAllowed()) return; // switched off in task manager's startup apps: the user's choice stands
+    std::wstring want = L"\"" + exe + L"\" " + kBootArg;
     wchar_t now[MAX_PATH * 2] = {};
     DWORD size = sizeof(now);
     if (RegGetValueW(HKEY_CURRENT_USER, kRunKey, L"HaloBar", RRF_RT_REG_SZ, nullptr, now, &size) == ERROR_SUCCESS && want == now) return; // already right
@@ -182,9 +192,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR args, int) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring exePath = exe;
+    if (args && wcsstr(args, kLogonArg) && !StartupAllowed()) { // the logon task, after task manager's switch went off: nothing to start, and no task next time
+        sys::LogonTask(L"HaloBar", L"", L"", false);
+        Sleep(kTaskGoneMs);
+        return 0;
+    }
     if (HandOver(exePath, args)) return 0; // before the mutex: the installed copy waits on it, not on us
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\HaloBar");
-    DWORD wait = args && wcsstr(args, kAfterCrash) ? kCrashWaitMs : kMutexWaitMs;
+    DWORD wait = args && wcsstr(args, kAfterCrash) ? kCrashWaitMs : args && wcsstr(args, kBootArg) ? 0 : kMutexWaitMs; // the second of the logon task and the startup entry just leaves, at once
     if (!mutex || WaitForSingleObject(mutex, wait) == WAIT_TIMEOUT) return 0; // wait for the old instance on restart, else bail
     sys::FinishUpdate(); // the exe an update replaced goes now that it isn't running
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 1; // sta for wic and shell apis
@@ -193,6 +208,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR args, int) {
 
     wcscpy_s(crashExe, exe); // the installed copy comes back after a crash, as after a restart
     StartWithWindows(exePath);
+    sys::LogonTask(L"HaloBar", exePath, std::wstring(kBootArg) + L" " + kLogonArg, StartupAllowed());
     StartShortcut(exePath);
     PathRemoveFileSpecW(exe);
     int code = 1;

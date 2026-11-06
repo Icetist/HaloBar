@@ -15,6 +15,8 @@
 #include <cwctype>
 
 #include "desktop.h"
+#include "faces_state.h"
+#include "feeds.h"
 #include "glyphs.h"
 #include "overflow.h"
 #include "popmenu.h"
@@ -36,6 +38,18 @@ constexpr UINT kClipSettleMs = 150; // a copy is often several clipboard calls: 
 std::vector<Bar*> coverBars; // every dock, main one first: the shared hooks and reads reach each of them
 HWINEVENTHOOK coverHooks[3] = {}, moveHook = nullptr; // what moves windows: focus, drags, minimizes; and the app in front's own moves. one set for every screen
 Bar* keyBar = nullptr; // the dock the keyboard hook speaks for: the main one
+bool sysContrast = false; // what windows has for high contrast and text size: at start, and when its settings change
+int sysText = 100;
+constexpr int kWinTextMax = 225; // the most windows' own slider goes
+constexpr float kTextRoom = 120; // dips kept free around open settings when text grows
+
+void ReadWindowsAccess() {
+    HIGHCONTRASTW hc = {sizeof(hc)};
+    sysContrast = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON);
+    DWORD pct = 100, size = sizeof(pct);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility", L"TextScaleFactor", RRF_RT_REG_DWORD, nullptr, &pct, &size) != ERROR_SUCCESS) pct = 100; // missing: never changed
+    sysText = (std::clamp)((int)pct, 100, kWinTextMax);
+}
 constexpr UINT kReserveSettleMs = 700; // explorer's taskbar takes a moment to really give up its strip once it auto-hides
 constexpr UINT kStatusMs = 10000; // network, battery and volume in the row: windows doesn't tell us, so a slow look
 constexpr UINT kRescanMs = 40; // a burst of window events lands in one walk of the windows
@@ -54,7 +68,7 @@ constexpr UINT kStatsMs = 2000; // the load and network widgets' tick while in s
 constexpr UINT kNotifQuickMs = 2000; // the store looked at while a pill could rise
 constexpr UINT kFullMs = 10000; // behind a fullscreen app: a slow look that it's still there, in case the shell's notice goes missing
 constexpr WORD kMaskKey = 0xE8; // unassigned: sent so a win + number never leaves the start menu to open
-constexpr WPARAM kKeyNext = 100, kKeyBack = 101, kKeyTray = 102; // WM_APP_WINKEY past the numbers: win + t, shift + win + t, win + b
+constexpr WPARAM kKeyNext = 100, kKeyBack = 101, kKeyTray = 102, kKeyStart = 103; // WM_APP_WINKEY past the numbers: win + t, shift + win + t, win + b, win alone
 constexpr WPARAM kTrayShowDesktop = 407; // the command explorer's taskbar runs for its show desktop corner
 constexpr UINT kIdleMs = 2500; // still this long: efficiency mode
 constexpr UINT_PTR kTrimTimer = 92; // still for longer: memory handed back to windows
@@ -115,13 +129,15 @@ Bar::Bar() {
     look = prefs::IslandLook();
     islandHere = prefs::IslandInstalled();
     cfg = prefs::Load();
+    ReadWindowsAccess();
+    theme::SetContrast(HighContrast()); // before the first look is made
     shellSeed = mediaSeed = Seed{}; // SyncLook fills it in at create, from the chosen accent or the wallpaper
-    shellFrom = shellTo = shellNow = mediaFrom = mediaTo = mediaNow = Make(shellSeed);
+    shellFrom = shellTo = shellNow = mediaFrom = mediaTo = mediaNow = MakeShell();
 }
 
 Bar::~Bar() {
     if (hwnd) {
-        for (UINT_PTR t : {kClockTimer, kRescanTimer, kHoverTimer, kCloseTimer, kIdleTimer, kDevTimer, kStatusTimer, kReserveTimer, kPreviewTimer, kPreviewHideTimer, kCoverTimer, kPeekTimer}) KillTimer(hwnd, t);
+        for (UINT_PTR t : {kClockTimer, kRescanTimer, kHoverTimer, kCloseTimer, kIdleTimer, kDevTimer, kStatusTimer, kReserveTimer, kPreviewTimer, kPreviewHideTimer, kCoverTimer, kThemeTimer, kPeekTimer}) KillTimer(hwnd, t);
         Unreserve();
     }
     if (shelf) DestroyWindow(shelf), shelf = nullptr;
@@ -130,6 +146,7 @@ Bar::~Bar() {
     if (clipListening && hwnd) RemoveClipboardFormatListener(hwnd);
     if (clipKeyOn && hwnd) UnregisterHotKey(hwnd, 0x4842);
     if (!lead && clip::History().dirty) clip::History().Save(); // the last copies' index, written before leaving
+    access.Detach();
     if (hwnd && !moon) HaloIcon(false);
     if (keyHook) UnhookWindowsHookEx(keyHook), keyHook = nullptr;
     if (keyBar == this) keyBar = nullptr;
@@ -164,6 +181,8 @@ bool Bar::Create(HINSTANCE instance) {
     if (!hwnd) return false;
     BOOL off = TRUE;
     DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &off, sizeof(off)); // no dwm fade, we animate ourselves
+    access.Attach(hwnd, L"HaloBar");
+    access.Enable(cfg.a11yReader != 0);
     frameWait = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_MANUAL_RESET | CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!frameWait) return false;
     wc.lpfnWndProc = DefWindowProcW; // the dock's strip holder: never shown, never painted, it only owns an appbar
@@ -201,6 +220,7 @@ bool Bar::Create(HINSTANCE instance) {
     shellNow = shellTo; // start on the final colors, no fade at boot
     mediaNow = mediaTo;
     shellT = mediaT = 1;
+    if (Clear()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // the right ink soon after start, not on the slow look
     ArmClock();
     radios.Start(hwnd, WM_APP_RADIOS);
     SyncAudio();
@@ -365,22 +385,39 @@ void Bar::BelowIsland() { // astraeus hangs over the top bar's middle, its hover
 }
 
 void Bar::SyncKeyHook() {
-    bool want = !moon && took && cfg.winKeys;
+    bool want = !moon && took && (cfg.winKeys || cfg.launcher); // the launcher answers the win key on its own
     if (want == (keyHook != nullptr)) return;
     if (want) keyHook = SetWindowsHookExW(WH_KEYBOARD_LL, OnKey, GetModuleHandleW(nullptr), 0), keyBar = this;
     else UnhookWindowsHookEx(keyHook), keyHook = nullptr, keyBar = nullptr;
 }
 
 LRESULT CALLBACK Bar::OnKey(int code, WPARAM wp, LPARAM lp) { // win + 1..9: taken before explorer's own hotkey, the app's spot in our dock instead
-    static bool win = false;
+    static bool win = false, tap = false; // tap: win went down and nothing else has yet
     if (code == HC_ACTION && keyBar) {
         const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
         bool down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
-        bool plain = !(k->flags & LLKHF_INJECTED) && GetAsyncKeyState(VK_CONTROL) >= 0 && GetAsyncKeyState(VK_MENU) >= 0;
+        bool real = !(k->flags & LLKHF_INJECTED);
+        bool plain = real && GetAsyncKeyState(VK_CONTROL) >= 0 && GetAsyncKeyState(VK_MENU) >= 0;
         bool shift = GetAsyncKeyState(VK_SHIFT) < 0;
         WPARAM what = k->vkCode >= '1' && k->vkCode <= '9' && !shift ? k->vkCode - '1' : k->vkCode == 'T' ? (shift ? kKeyBack : kKeyNext) : k->vkCode == 'B' && !shift ? kKeyTray : (WPARAM)-1;
-        if (k->vkCode == VK_LWIN || k->vkCode == VK_RWIN) win = down;
-        else if (win && plain && what != (WPARAM)-1) { // win + t and win + b too: windows' would put the keyboard on its hidden taskbar
+        bool isWin = k->vkCode == VK_LWIN || k->vkCode == VK_RWIN;
+        if (!keyBar->cfg.winKeys) what = (WPARAM)-1; // the launcher alone keeps the hook: the numbers and win + t stay windows'
+        if (isWin) {
+            if (down && real && !win) tap = true; // a held key's repeats aren't a new press
+            if (!down && tap && keyBar->cfg.launcher && !keyBar->full) { // tapped alone: ours instead of windows' start
+                PostMessageW(keyBar->hwnd, WM_APP_WINKEY, kKeyStart, 0);
+                INPUT mask[2] = {}; // an unassigned key before win comes up: windows no longer sees a tap
+                mask[0].type = mask[1].type = INPUT_KEYBOARD;
+                mask[0].ki.wVk = mask[1].ki.wVk = kMaskKey;
+                mask[1].ki.dwFlags = KEYEVENTF_KEYUP;
+                SendInput(2, mask, sizeof(INPUT)); // our own input last: windows lets the launcher take the keyboard
+            }
+            if (!down) tap = false;
+            win = down;
+        } else if (down && real) {
+            tap = false; // a combination: win + e, win + shift + s and the rest stay windows' or ours
+        }
+        if (!isWin && win && plain && what != (WPARAM)-1) { // win + t and win + b too: windows' would put the keyboard on its hidden taskbar
             if (down) {
                 PostMessageW(keyBar->hwnd, WM_APP_WINKEY, what, 0); // acted on outside the hook: hooks must answer fast
                 INPUT mask[2] = {}; // an unassigned key while win is still down: its release then opens no start menu
@@ -620,6 +657,47 @@ void Bar::CheckCovered() {
             for (const auto& w : a.wins)
                 if (!maxHere && IsWindowVisible(w.hwnd) && IsZoomed(w.hwnd) && MonitorFromWindow(w.hwnd, MONITOR_DEFAULTTONULL) == mon) maxHere = true;
     if (covered != was || maxHere != wasMax) Redraw();
+    SyncAppHere();
+}
+
+void Bar::SyncAppHere() {
+    constexpr UINT kRecheckMs = 2000; // a window can open or close with no event worth trusting
+    bool was = appHere;
+    appHere = false;
+    if (cfg.appsTheme) { // only with the option on: nothing walks the windows for it otherwise
+        struct Ctx { HMONITOR mon; DWORD self; bool found; } c{mon, GetCurrentProcessId(), false};
+        EnumWindows([](HWND w, LPARAM lp) -> BOOL {
+            auto* c = reinterpret_cast<Ctx*>(lp);
+            if (!IsZoomed(w) || !IsWindowVisible(w) || IsIconic(w) || MonitorFromWindow(w, MONITOR_DEFAULTTONULL) != c->mon) return TRUE;
+            if (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
+            DWORD pid = 0;
+            GetWindowThreadProcessId(w, &pid);
+            if (pid == c->self) return TRUE;
+            BOOL cloaked = FALSE;
+            if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return TRUE; // another desktop, a suspended app
+            c->found = true;
+            return FALSE;
+        }, reinterpret_cast<LPARAM>(&c));
+        appHere = c.found;
+        SetTimer(hwnd, kThemeTimer, kRecheckMs, nullptr);
+    } else {
+        KillTimer(hwnd, kThemeTimer);
+    }
+    if (appHere != was) SyncThemeSet();
+}
+
+void Bar::SyncThemeSet() {
+    int want = !cfg.appsTheme ? 0 : setOpen && setTab >= 0 ? setTab : appHere ? 1 : 0;
+    if (want == setNow) return;
+    if (hexFor >= 0) EndHex(true); // what's being typed belongs to the one going out
+    prefs::Settings::ThemeSet live{cfg.look, cfg.accent, cfg.accentHex, cfg.customBg, cfg.blur, cfg.opacity, cfg.glassTint}, in = cfg.otherSet;
+    cfg.look = in.look, cfg.accent = in.accent, cfg.accentHex = in.accentHex, cfg.customBg = in.customBg, cfg.blur = in.blur, cfg.opacity = in.opacity, cfg.glassTint = in.glassTint;
+    cfg.otherSet = live;
+    setNow = want;
+    if (setOpen) prefs::SaveForApps(setNow == 1);
+    SyncLook(); // a crossfade; into or out of glass on the message, never mid-frame
+    SampleShade();
+    PostMessageW(hwnd, WM_APP_RESTYLE, 0, 0);
 }
 
 void Bar::OnNotifWrite() {
@@ -836,11 +914,16 @@ void Bar::SetPanel(Panel p) {
     if (shownWas == kWgNotes && wgShown != kWgNotes && noteLoaded) SaveNote(); // the note is written as it closes
     if (noteWas && !Typing()) draft.clear();
     if (shownWas == kWgClip && wgShown != kWgClip) ClipClosed();
+    if (IsFace(shownWas) && wgShown != shownWas) faces::ClosePanel(); // what was typed there is kept
     if (p == Panel::None && updateReady) PostQuitMessage(2); // an update waited for the panel to close
     if (trayOpen && !trayWas) SyncGhosts(); // the icons explorer kept, read fresh as the tray opens
     if (calOpen && !calWas) cals.Sync(hwnd, WM_APP_CAL, sys::cal::Calendars::kOnOpen), calPick = 0; // opening it shows changes made a minute ago; today picked
     if (p == Panel::Media || p == Panel::Settings) trimDue = true; // art and layers get cleared from d2d's cache once it's gone again
     ringDrag = false;
+    if (hexFor >= 0 && !setOpen) EndHex(true); // the panel went: what was typed stays if it's a color
+    if (!setOpen) setTab = -1; // back to whichever applies
+    SyncThemeSet();
+    prefs::SaveForApps(setOpen && setNow == 1);
     if (qsOpen && !quickWas) radios.Recheck(); // bluetooth plugged in after the bar started shows up
     if (qsOpen && !quickWas) { // fresh numbers as it opens
         hotspot.Refresh(hwnd, WM_APP_HOTSPOT);
@@ -923,7 +1006,7 @@ bool Bar::EnsureDev() {
         FreeDev();
         return false;
     }
-    if (LookNow() == 2 && !OpenGlass()) { // no backdrop blur here: dark glass from now on, on the plain path
+    if (Frosted() && !OpenGlass()) { // no backdrop blur here: dark glass from now on, on the plain path
         glassFailed = true;
         SyncLook();
     }
@@ -1034,21 +1117,118 @@ void Bar::Trim() { // long idle, or a game in front: caches and pages back to wi
     gfx::GiveBack();
 }
 
+Color Bar::Tint(float k) const {
+    constexpr float kFrost = 0.50f, kSmoke = 0.45f, kFrostWhite = 0.55f, kSmokeBlack = 0.70f; // how far the tint leans to white or black to do it
+    if (!Frosted() || TintNow() < 0) return Color{0.02f, 0.02f, 0.04f, kSmoke * k}; // plain glass
+    Color c = Color::Rgb((uint32_t)TintNow());
+    return DarkInk() ? c.Mix(Color{1, 1, 1, 1}, kFrostWhite).Alpha(kFrost * k) : c.Mix(Color{0, 0, 0, 1}, kSmokeBlack).Alpha(kSmoke * k);
+}
+
+Theme Bar::MakeShell() const {
+    Theme t = Make(shellSeed);
+    if (cfg.accent != prefs::Settings::kFollow || !islandHere || look.followsBar || theme::Contrast()) return t;
+    Seed s = shellSeed; // the same seed in astraeus' own look gives what astraeus really shows; our look doesn't get to retune it
+    s.look = look.look == prefs::Settings::kClear ? 2 : look.look; // astraeus' clear shows its accent as its glass does
+    s.bg = look.customBg;
+    s.tint = look.look == 2 ? look.glassTint : -1; // a pale tint deepens the accent over there too
+    Theme there = Theme::From(s);
+    t.accent = there.accent, t.accentHi = there.accentHi, t.onAccent = there.onAccent, t.glow = there.glow;
+    return t;
+}
+
 int Bar::LookNow() const {
+    if (theme::Contrast()) return 0; // no glass under it: everything solid
     int l = cfg.look == prefs::Settings::kFollow ? look.look : cfg.look;
     return l == 2 && glassFailed ? 0 : l; // glass without a blur to sit on is just dark
 }
 
 float Bar::Blur() const { return (cfg.look == prefs::Settings::kFollow ? look.glassBlur : cfg.blur) / 100.0f; }
 
+bool Bar::HighContrast() const { return cfg.a11yContrast == prefs::Settings::kContrastOn || (cfg.a11yContrast == prefs::Settings::kContrastAuto && sysContrast); }
+
+int Bar::TextPct() const { return (std::max)(cfg.a11yText, cfg.a11yFollow ? sysText : 100); }
+
+float Bar::TextZoom(float base) const {
+    float want = TextPct() / 100.0f;
+    if (want <= 1) return 1;
+    float sw = (monitor.right - monitor.left) / dpi, sh = (monitor.bottom - monitor.top) / dpi;
+    float fit = (std::min)(sh / (kSetRise + kTextRoom), sw / (kSetW + kTextRoom)) / base;
+    return (std::clamp)(want, 1.0f, (std::max)(1.0f, fit));
+}
+
+void Bar::SetAccess(int prefs::Settings::*field, const wchar_t* name, int value) {
+    prefs::SaveNum(name, value);
+    for (Bar* b : Docks()) b->cfg.*field = value;
+    ApplyAccess();
+    Redraw();
+}
+
+void Bar::ApplyAccess() {
+    ReadWindowsAccess();
+    const std::vector<Bar*>& docks = Docks();
+    if (docks.empty()) return;
+    bool strong = docks.front()->HighContrast(), moved = strong != theme::Contrast();
+    theme::SetContrast(strong);
+    for (Bar* b : docks) {
+        b->access.Enable(b->cfg.a11yReader != 0);
+        if (!b->cfg.a11yKeys && b->panelKeys) b->LeaveKeys();
+        if (moved) b->SyncLook();
+        if (moved || b->dpi * b->Zoom() != b->scale) PostMessageW(b->hwnd, WM_APP_RESTYLE, 1, 0); // never mid-frame; into or out of glass, or a new size
+    }
+}
+
+bool Bar::KeyNav(WPARAM key, LPARAM lp) {
+    if (!cfg.a11yKeys) return false;
+    bool shift = GetKeyState(VK_SHIFT) < 0, first = !(lp & (1 << 30)); // not a held key's repeat
+    switch (key) {
+    case VK_TAB:
+        ui.Tab(shift ? -1 : 1);
+        return true;
+    case VK_RETURN:
+    case VK_SPACE:
+        if (!ui.Focused()) return false;
+        if (first) ui.FireFocus(), ui.KeyHold(true);
+        return true;
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+        if (!ui.Focused()) return false;
+        if (ui.SliderFocused()) ui.StepFocus(key == VK_RIGHT || key == VK_UP ? 1 : -1);
+        else ui.Tab(key == VK_RIGHT || key == VK_DOWN ? 1 : -1);
+        return true;
+    case VK_ESCAPE:
+        if (ui.Focused()) ui.Unfocus(); // one step back at a time: the control, then the panel
+        else SetPanel(Panel::None);
+        return true;
+    default:
+        return false;
+    }
+}
+
+void Bar::EnterKeys(HWND back) {
+    panelKeys = true;
+    panelBack = back;
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+}
+
+void Bar::LeaveKeys() {
+    panelKeys = false;
+    ui.Unfocus();
+    if (panelBack && IsWindow(panelBack) && GetForegroundWindow() == hwnd) SetForegroundWindow(panelBack);
+    panelBack = nullptr;
+}
+
 Theme Bar::Make(Seed s) const { // island's materials: its own look, or the one picked here
-    s.look = LookNow();
+    s.tint = Frosted() ? TintNow() : -1;
+    s.look = !Clear() ? LookNow() : Frosted() ? 2 : wallLight ? 1 : 0; // clear: its panels are glass; no blur on this pc, the solid look on the wallpaper's side
     s.bg = cfg.look == 3 ? cfg.customBg : look.customBg; // the bar's own custom look, or island's
     return Theme::From(s);
 }
 
 void Bar::SyncLook() {
-    look = prefs::IslandLook();
+    look = prefs::IslandLook(setNow == 1); // following astraeus: the theme of its that matches this one
     bool follow = cfg.accent == prefs::Settings::kFollow; // island's accent: its own color, the wallpaper's, or the bar's pick
     bool fixed = follow ? look.accentFixed : cfg.accent == 1;
     if (fixed) shellSeed = theme::FromCol(Color::Rgb((uint32_t)(follow ? look.accentHex : cfg.accentHex))), wallSeeded = false;
@@ -1056,8 +1236,30 @@ void Bar::SyncLook() {
         if (!wallSeeded) wallKey.clear(); // back from a fixed accent: the wallpaper's seed again, even if the file didn't change
         SyncWall(); // the same file as last time is not decoded again: an island setting change costs nothing here
     }
-    SetShell(Make(shellSeed));
+    SyncWallTone();
+    SetShell(MakeShell());
     if (coverTint) SetMedia(Make(mediaSeed));
+}
+
+bool Bar::SyncWallTone() {
+    if (!Clear()) return false;
+    constexpr float kLightFrom = 0.5f;
+    std::wstring path = theme::WallPath(), key;
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    bool picture = !path.empty() && GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info);
+    COLORREF plain = GetSysColor(COLOR_DESKTOP);
+    key = picture ? path + L"|" + std::to_wstring(info.ftLastWriteTime.dwLowDateTime) : L"#" + std::to_wstring(plain); // no picture: windows' plain color
+    if (key == wallToneKey) return false;
+    wallToneKey = key;
+    float lum = (0.2126f * GetRValue(plain) + 0.7152f * GetGValue(plain) + 0.0722f * GetBValue(plain)) / 255;
+    if (picture) {
+        ComPtr<IWICBitmapSource> src = gfx::DecodeFile(path.c_str(), 256);
+        if (!src) return false; // unreadable: it stays on the side it's on
+        lum = theme::BmpLuma(src.Get());
+    }
+    bool light = lum > kLightFrom, changed = light != wallLight;
+    wallLight = light;
+    return changed;
 }
 
 bool Bar::SyncWall() {
@@ -1153,7 +1355,7 @@ void Bar::OnPrefs() {
     vizAlpha = prefs::VizAlpha(), vizGain = prefs::VizGain(); // its sliders too; the redraw below shows them
     bool glassNow = glass != nullptr;
     SyncLook();
-    if (ctx && (LookNow() == 2) != glassNow) FreeDev(); // island went into or out of glass, and the bar follows it
+    if (ctx && Frosted() != glassNow) FreeDev(); // island went into or out of glass, and the bar follows it
     Redraw();
 }
 
@@ -1200,7 +1402,17 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    if (msg == WM_THEMECHANGED && theme::Contrast()) SyncLook(), Redraw(); // high contrast's colors themselves
     switch (msg) {
+    case WM_GETOBJECT: {
+        LRESULT out = 0;
+        if (access.OnGetObject(wp, lp, out)) return out;
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    case Access::kMsg:
+        access.Apply(ui, wp, lp);
+        Redraw();
+        return 0;
     case WM_MOUSEACTIVATE:
         return passFor.empty() && !launchOpen && !Typing() ? MA_NOACTIVATE : MA_ACTIVATE; // clicks never steal focus from the user's app, except while a password is typed here
     case WM_CHAR:
@@ -1214,6 +1426,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (launchOpen) {
             if (wp != VK_RETURN && wp != VK_ESCAPE) LaunchChar((wchar_t)wp);
+            return 0;
+        }
+        if (hexFor >= 0) {
+            HexChar((wchar_t)wp);
             return 0;
         }
         if (mixName >= 0) { // a mixer group's name
@@ -1234,8 +1450,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         Redraw();
         return 0;
     case WM_ACTIVATE:
+        if (LOWORD(wp) == WA_INACTIVE && hexFor >= 0) hexBack = nullptr, EndHex(true), Redraw(); // clicked into another app: it keeps the keyboard
+        if (LOWORD(wp) == WA_INACTIVE && panelKeys) panelKeys = false, panelBack = nullptr, ui.Unfocus(), Redraw(); // clicked away: the keyboard left the panel
         if (LOWORD(wp) == WA_INACTIVE && dockKey >= 0) dockKey = -1, keyBack = nullptr, Redraw(); // clicked away: the keyboard left the dock
-        if (LOWORD(wp) == WA_INACTIVE && (launchOpen || Typing()) && !clipMenuUp) SetPanel(Panel::None); // clicked away: the launcher goes, as start does
+        if (LOWORD(wp) == WA_INACTIVE && (launchOpen || (Typing() && !editing)) && !clipMenuUp) SetPanel(Panel::None); // clicked away: the launcher goes, as start does
         if (LOWORD(wp) == WA_INACTIVE && !passFor.empty()) { // clicked away mid-password: drop it rather than hold the keyboard
             if (!pass.empty()) SecureZeroMemory(pass.data(), pass.size() * sizeof(wchar_t));
             pass.clear();
@@ -1385,10 +1603,14 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (!FullInFront()) SetFull(false);
             else SetCoalescableTimer(hwnd, kFullTimer, kFullMs, nullptr, 1000);
             break;
+        case kThemeTimer:
+            KillTimer(hwnd, kThemeTimer);
+            SyncAppHere();
+            break;
         case kCoverTimer:
             if (full && !FullInFront()) SetFull(false); // the game or video left the front, or left fullscreen: back at once, not at the slow look
             CheckCovered();
-            if (LookNow() == 2) SetTimer(hwnd, kShadeTimer, 500, nullptr); // what's behind the glass may have changed: one look once things settle, a screen read is costly
+            if (LookNow() == 2 || Clear()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // what's behind the glass may have changed: one look once things settle, a screen read is costly
             break;
         case kTitleTimer: // only the top bar shows titles: the dock's pixels stay as they are
             KillTimer(hwnd, kTitleTimer);
@@ -1398,7 +1620,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             Arm(0);
             break;
         case kStatsTimer: // the load and the network, only while someone can see them
-            if (!HasWg(kWgStats) && !HasWg(kWgNet)) break;
+            if (!NeedsStats() && !HasWg(kWgNet)) break;
             if (StatsUnseen()) { // tucked away or behind a game: no ticks at all, the first frame back in sight starts them again
                 statsParked = true;
                 break;
@@ -1416,6 +1638,11 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case kFocusTimer:
             StepFocus();
+            break;
+        case kFaceTimer: // a face's minute or second came round
+            faces::state::TimerCheck();
+            if (!StatsUnseen()) Redraw();
+            FaceTick();
             break;
         case kClipTimer:
             OnClipboard(); // a calendar link being waited for
@@ -1468,7 +1695,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt); // leave messages can lie, the cursor can't
-            if (GetCapture() != hwnd && !editing && !Typing() && !OnChrome({pt.x / scale, pt.y / scale})) CloseAll(); // editing the dock or typing a note: only done or esc ends it, never a stray mouse
+            if (GetCapture() != hwnd && !editing && !Typing() && hexFor < 0 && !OnChrome({pt.x / scale, pt.y / scale})) CloseAll(); // editing the dock or typing a note: only done or esc ends it, never a stray mouse
             break;
         }
         case kIdleTimer: Idle(); break;
@@ -1502,7 +1729,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (HasWg(kWgWeather)) RefreshWx(); // cached for half an hour: fetches only when that's up
             if (HasWg(kWgPhoto) && shadeTick % 360 == 0) PickPhoto(); // another picture each hour
             if (HasWg(kWgFiles) && shadeTick % 6 == 0 && !(wgOpen && wgKind == kWgFiles) && !Hidden()) LoadFiles(L""); // the newest download, each minute
-            if (++shadeTick % 3 == 0) SampleShade(); // a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
+            if (++shadeTick % 3 == 0 || Clear()) SampleShade(); // clear's ink has more riding on it: every tick. a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
             BelowIsland(); // astraeus may have started since: its hover strip goes back over the top bar
             if (auto was = promoted; SyncPromoted(), promoted != was) Redraw(); // an icon moved in or out of the taskbar in windows' settings
             if (!notifPolling && PillsLive()) notifPolling = true, SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500); // pills can rise again: the quick look comes back
@@ -1608,6 +1835,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (ClipKey(wp, msg == WM_SYSKEYDOWN)) return 0;
         break;
     case WM_KEYUP:
+        if (panelKeys && (wp == VK_RETURN || wp == VK_SPACE)) ui.KeyHold(false), Redraw();
         if (ClipKey(wp, false)) return 0;
         return 0;
     case WM_CLIPBOARDUPDATE:
@@ -1621,6 +1849,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnApps(wp, lp);
         return 0;
     case WM_KEYDOWN:
+        if (panelKeys && passFor.empty() && mixName < 0 && hexFor < 0 && !launchOpen && !Typing() && KeyNav(wp, lp)) {
+            Redraw();
+            return 0;
+        }
         if (ClipKey(wp, true)) return 0;
         if (dockKey >= 0) DockKey(wp);
         else if (launchOpen && (wp == VK_LEFT || wp == VK_RIGHT || wp == VK_UP || wp == VK_DOWN || wp == VK_ESCAPE || wp == VK_RETURN)) LaunchKey(wp);
@@ -1679,7 +1911,13 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         for (Bar* b : coverBars) { // one fetch for every dock
             b->wx = wx;
             if (b->HasWg(kWgWeather)) b->SyncFit(), b->Redraw(); // a new temperature may be a digit longer or shorter
+            if (!b->FaceKinds().empty()) b->Redraw();
         }
+        if (!wx.place.empty() && feeds::Setting("sky.place") != wx.place) feeds::SetSetting("sky.place", wx.place), feeds::Refresh("sky");
+        return 0;
+    case WM_APP_FEEDS:
+        for (Bar* b : Docks())
+            if (!b->FaceKinds().empty() && !b->StatsUnseen()) b->Redraw();
         return 0;
     case WM_APP_ICON:
         if (icons.Deliver(lp)) Redraw();
@@ -1697,6 +1935,10 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_WINKEY:
         if (wp == kKeyNext || wp == kKeyBack) FocusDock(wp == kKeyNext ? 1 : -1);
         else if (wp == kKeyTray) OpenOverflow(); // windows' own tray flyout: it takes the keyboard itself
+        else if (wp == kKeyStart) {
+            if (launchOpen) SetPanel(Panel::None); // again: it goes, as start does
+            else if (cfg.launcher) Anchor(W / 2, false), OpenLauncher();
+        }
         else if (tasks && (int)wp < (int)tasks->Apps().size()) tasks->Click((int)wp); // start it, bring it up, or tuck it away, as windows' taskbar does
         return 0;
     case WM_DEVICECHANGE:
@@ -1720,7 +1962,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_APP_STATSRC:
         statMaking = false;
-        if (HasWg(kWgStats) && !statSrc) statSrc.reset(reinterpret_cast<sys::StatSrc*>(lp));
+        if (NeedsStats() && !statSrc) statSrc.reset(reinterpret_cast<sys::StatSrc*>(lp));
         else delete reinterpret_cast<sys::StatSrc*>(lp); // switched off meanwhile
         return 0;
     case WM_APP_PICK:
@@ -1730,7 +1972,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnPolled(lp);
         return 0;
     case WM_APP_RESTYLE:
-        if (ctx && (LookNow() == 2) != (glass != nullptr)) FreeDev(); // into or out of glass: a different composition tree
+        if (ctx && Frosted() != (glass != nullptr)) FreeDev(); // into or out of glass: a different composition tree
         if (wp) {
             Place(); // a new size or strip
             if (!TopAuto()) topPeek = topCovered = false;
@@ -1747,8 +1989,9 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         else if (wp == ABN_POSCHANGED && !reserving && barPx > 0) SetTimer(hwnd, kPosTimer, 250, nullptr); // a burst of moves, one look: answering each one starts a ping-pong with explorer
         return 0;
     case WM_SETTINGCHANGE:
-        if (wp == SPI_SETDESKWALLPAPER && SyncWall()) {
-            SetShell(Make(shellSeed));
+        if (!moon) ApplyAccess(); // high contrast or the text size may be what changed
+        if (wp == SPI_SETDESKWALLPAPER && (SyncWall() | SyncWallTone())) { // both, always
+            SetShell(MakeShell());
             Redraw();
         }
         return 0;
@@ -1852,6 +2095,11 @@ void Bar::Frame() {
     bool fullFrame = fullNext || springs || themes || easing || Inside(mediaR, input.mouse) || !mediaCalm || AnyOpen() || card.Shown() || orbTopLive || orbBotLive; // the fast frames repaint only a dock at rest: a fading hover, a panel's or a card's shadow over the dock would show as a lighter square
 
     const Theme& t = shellNow;
+    bool clear = Clear();
+    Theme clearTop, clearBot;
+    if (clear) clearTop = theme::ClearInk(t, shadeTopNow), clearBot = theme::ClearInk(t, shadeBotNow); // eased: the ink crosses over, it doesn't snap
+    const Theme& tTop = clear ? clearTop : t;
+    const Theme& tBot = clear ? clearBot : t;
     if (!fullFrame) { // only the toolbar's little bars could have moved: step them first, and draw nothing at all if no bar moved by half a pixel
         barsMoving = StepBars(dt, now);
         bool visible = false;
@@ -1866,12 +2114,15 @@ void Bar::Frame() {
         skyT = orbBot;
         D2D1_RECT_F area = Inset(barsRect, -2, -3), reach = Inset(area, -1 / scale, -1 / scale); // the pass rounds out to whole pixels
         bool ok = Pass(area, [&] { // only the bars' own square: the plate, the pill's tint, the bars; cover and text stay as drawn
-            if (Vert()) canvas->Glow({cfg.edge == 1 ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // the column's shadow, as DrawWegCol lays it
+            inkNow = clear ? &clearBot : nullptr;
+            if (clear) {} // no plate, so no shadow under it
+            else if (Vert()) canvas->Glow({cfg.edge == 1 ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // the column's shadow, as DrawWegCol lays it
             else canvas->Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // the dock's shadow first, as DrawWeg lays it: through glass, a square without it reads lighter
             PaintPlate(wegR, WegRadius(), t, shadeBotNow, &reach); // the square sits well inside the dock: no curves to work out, no rim
             float pr = (std::min)(Width(mediaR), Height(mediaR)) / 2;
-            canvas->Fill(mediaR, Within(reach, mediaR, pr, 1.5f) ? 0 : pr, t.text.Alpha(0.05f)); // the pill at rest, as DrawMediaTile paints it unhovered; upright in a side dock
+            canvas->Fill(mediaR, Within(reach, mediaR, pr, 1.5f) ? 0 : pr, tBot.text.Alpha(0.05f)); // the pill at rest, as DrawMediaTile paints it unhovered; upright in a side dock
             DrawBars(0, 0, false);
+            inkNow = nullptr;
         });
         if (!ok) {
             FreeDev();
@@ -1894,6 +2145,10 @@ void Bar::Frame() {
     D2D1_RECT_F topDirty = Inset(Union(top, drawnTop), -2, -2), botDirty = Inset(Union(bottom, drawnBottom), -2, -2);
     // each bar draws only when something there changed: hovering the dock leaves the top bar's pixels alone, and the other way round
     bool cardMoves = springs || Grown() > 0.5f;
+    bool hear = access.Listening(); // a screen reader is here: this frame says what it draws, all of it
+    canvas->Listen(hear);
+    ui.Listen(hear);
+    if (hear) allNext = true;
     bool onTop = Inside(top, input.mouse), onBot = Inside(bottom, input.mouse) || Inside(wegHit, input.mouse);
     bool drawTop = allNext || topAsk || themes || topLive || onTop || overTop || (cardDown && cardMoves) || easing || !Same(top, drawnTop);
     bool drawBot = allNext || themes || botLive || onBot || overBot || (!cardDown && cardMoves) || easing || dragging || !Same(bottom, drawnBottom);
@@ -1908,8 +2163,11 @@ void Bar::Frame() {
     bool ok = true;
     skyT = orbTop;
     if (drawTop) ok = Pass(topDirty, [&] {
-        DrawToolbar(t);
+        inkNow = clear ? &clearTop : nullptr;
+        DrawToolbar(tTop);
+        inkNow = nullptr;
         if (cardDown) DrawCard(t, shape.Get());
+        ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
     });
     else ui.KeepHits(drawnTop);
     bool tb = ui.Busy(), ta = ui.Ambient();
@@ -1919,14 +2177,19 @@ void Bar::Frame() {
     skyT = orbBot;
     if (!drawBot) ui.KeepHits(Union(drawnBottom, wegHit));
     else ok = ok && Pass(botDirty, [&] {
-        DrawWeg(t);
+        inkNow = clear ? &clearBot : nullptr;
+        DrawWeg(tBot);
+        inkNow = nullptr;
         if (!cardDown) DrawCard(t, shape.Get());
+        ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
     });
     if (drawBot) botLive = ui.Busy() || ui.Ambient();
     ui.Merge(tb, ta);
     if (!drawTop) top = drawnTop; // untouched: the surface still holds what it held
     if (!drawBot) bottom = drawnBottom;
     ui.End();
+    if (hear) access.Publish(ui, *canvas, scale);
+    if (panelKeys && !AnyOpen()) LeaveKeys(); // its panel closed: back to the app it came from
     input.pressed = input.released = input.rclick = false;
     input.wheel = 0;
     midClick = false;

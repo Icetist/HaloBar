@@ -175,7 +175,7 @@ void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // a panel: island'
     c.FillGeometry(shape, Body(t)); // the dock's opacity, so a panel reads as part of it
     if (t.stars) starfall::Sky(c, pill, 0, t, skyT, Body(t).a, 1, shape, 1, skyDrift); // island's starfall: its orb drifts while the dropdown is open
     if (!t.glass) return;
-    if (glassShade > 0.01f) c.FillGeometry(shape, Color{0.02f, 0.02f, 0.04f, 0.45f * glassShade}); // smoked over a white page
+    if (glassShade > 0.01f) c.FillGeometry(shape, Tint(glassShade));
     D2D1_RECT_F o = pill; // island's glass: gloss from the top, a bright rim
     c.FillGeoV(shape, {o.left, o.top, o.right, o.top + (std::min)(Height(o), 90.0f)}, t.sheen, t.sheen.Alpha(0));
     c.StrokeGeo(shape, Color{1, 1, 1, 0.26f}, 1.2f);

@@ -3,8 +3,8 @@
 
 namespace wg {
 
-enum Cat { kCatAll, kCatMedia, kCatWork, kCatSystem, kCatTools, kCatCount };
-inline constexpr int kKinds = 30; // matches Bar::kWgCount
+enum Cat { kCatAll, kCatMedia, kCatWork, kCatSystem, kCatTools, kCatClocks, kCatWeather, kCatMoney, kCatOnline, kCatCount };
+inline constexpr int kKinds = 30; // matches Bar::kWgFaces: the faces come after these
 
 struct Meta {
     const wchar_t* name;

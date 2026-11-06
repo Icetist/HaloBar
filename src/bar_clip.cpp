@@ -370,7 +370,7 @@ void Bar::DrawClip(const Theme& t, const D2D1_RECT_F& r) {
     bool focused = GetForegroundWindow() == hwnd;
 
     // the search row: what's typed, and the panel's own buttons
-    D2D1_RECT_F field = Rect(r.left - 6, r.top - 4, Width(r) - 112, 30);
+    D2D1_RECT_F field = Rect(r.left - 6, r.top - 4, Width(r) - 146, 30);
     c.Fill(field, 15, t.text.Alpha(focused ? 0.08f : 0.05f));
     c.Icon(glyph::Search, {field.left + 18, (field.top + field.bottom) / 2}, 16, t.textDim);
     D2D1_RECT_F words = {field.left + 34, field.top, field.right - 12, field.bottom};
@@ -388,6 +388,17 @@ void Bar::DrawClip(const Theme& t, const D2D1_RECT_F& r) {
     if (w::IconBtn(ui, t, Ui::Id("clip.view"), {bx, field.top + 15}, 28, st.opt.view ? SysList : SysGrid, 15)) st.opt.view ^= 1, st.SaveOptions(), clipFollow = true;
     bx -= 34;
     if (w::IconBtn(ui, t, Ui::Id("clip.pause"), {bx, field.top + 15}, 28, st.opt.paused ? SysEyeOff : SysEye, 15, true, st.opt.paused != 0)) st.opt.paused ^= 1, st.SaveOptions();
+    bx -= 34;
+    D2D1_RECT_F wipeBox = {bx - 14, field.top + 1, bx + 14, field.top + 29};
+    if (clipSetup || !Inside(wipeBox, input.mouse)) clipWipeArmed = false; // the second click has to follow the first, right there
+    if (!clipSetup) {
+        if (clipWipeArmed) c.Fill(wipeBox, 14, Color::Rgb(0xFF6B6B).Alpha(0.28f));
+        if (w::IconBtn(ui, t, Ui::Id("clip.wipe"), {bx, field.top + 15}, 28, glyph::Delete, 16, true, clipWipeArmed)) {
+            if (clipWipeArmed) st.Clear(), clipSel = 0, clipScroll = 0, SetTimer(hwnd, kClipSaveTimer, kSaveMs, nullptr);
+            clipWipeArmed = !clipWipeArmed;
+            Redraw();
+        }
+    }
 
     D2D1_RECT_F body = {r.left - 6, r.top + kTop + kTabsH + 6, r.right + 6, r.bottom - kFoot};
     if (clipSetup) {
@@ -421,9 +432,10 @@ void Bar::DrawClip(const Theme& t, const D2D1_RECT_F& r) {
     }
 
     int peekAt = DrawClipItems(t, body);
-    const wchar_t* hint = st.opt.view ? L"Enter paste  ·  Shift plain  ·  Ctrl+P pin  ·  Del forget  ·  hold Alt to preview"
+    const wchar_t* hint = clipWipeArmed ? L"Click again to clear all  ·  pins and notes stay"
+                          : st.opt.view ? L"Enter paste  ·  Shift plain  ·  Ctrl+P pin  ·  Del forget  ·  hold Alt to preview"
                                       : L"Enter paste  ·  Shift+Enter plain text  ·  Ctrl+1…9 quick paste  ·  Ctrl+P pin  ·  hold Alt to preview";
-    c.Text(hint, Rect(r.left, r.bottom - 14, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
+    c.Text(hint, Rect(r.left, r.bottom - 14, Width(r), 14), Weight::Regular, 10.5f, clipWipeArmed ? Color::Rgb(0xFF6B6B) : t.textLow, Align::Center);
     if (clipPeek && peekAt >= 0 && peekAt < (int)st.items.size()) DrawClipPeek(t, body, st.items[(size_t)peekAt]);
 }
 
@@ -635,11 +647,11 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     clip::Store& st = clip::History();
     clip::Options& o = st.opt;
     D2D1_RECT_F view = {area.left, area.top, area.right, area.bottom};
-    constexpr float kGap = 10, kHead = 30, kFootPad = 10;
+    constexpr float kGap = 10, kHead = 30, kFootPad = 10, kCodeLabelH = 18;
     float half = (Width(view) - kGap) / 2;
     float recH = kHead + 5 * kSetupLineH + kFootPad, pasteH = kHead + 2 * kSetupLineH + setui::kNoteLine + kFootPad;
     constexpr float kAgeRow = 20 + 30; // "delete after" and its choices
-    float histH = kHead + 14 + 36 + 34 + kAgeRow + kSetupLineH + kFootPad, keyH = kHead + 30 + setui::kNoteLine + kFootPad, lookH = kHead + 3 * 34 + kFootPad;
+    float histH = kHead + 14 + 36 + 34 + kAgeRow + kSetupLineH + kFootPad, keyH = kHead + 30 + setui::kNoteLine + kFootPad, lookH = kHead + 2 * 34 + kCodeLabelH + 34 + kFootPad;
     float neverH = kHead + 30 + setui::kNoteLine + kFootPad + 8;
     float content = (std::max)(recH, histH + kGap + keyH) + kGap + (std::max)(pasteH + kGap + neverH, lookH) + 4;
     float most = (std::max)(0.0f, content - Height(view));
@@ -652,7 +664,7 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     float y = view.top - scroll, x2 = view.left + half + kGap;
     bool save = false;
 
-    D2D1_RECT_F in = setui::Box(c, t, Rect(view.left, y, half, recH), L"RECORDING");
+    D2D1_RECT_F in = setui::Box(c, t, Rect(view.left, y, half, recH), L"Recording");
     bool f[5] = {};
     setui::Toggle(ui, t, "clip.o.pause", Rect(in.left, in.top, Width(in), kSetupLineH), L"Pause: keep nothing new", o.paused != 0, f[0]);
     setui::Toggle(ui, t, "clip.o.pass", Rect(in.left, in.top + kSetupLineH, Width(in), kSetupLineH), L"Skip password managers", o.noPass != 0, f[1]);
@@ -663,7 +675,7 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     for (int i = 0; i < 5; ++i)
         if (f[i]) *fields[i] ^= 1, save = true;
 
-    in = setui::Box(c, t, Rect(x2, y, half, histH), L"HISTORY");
+    in = setui::Box(c, t, Rect(x2, y, half, histH), L"History");
     float v = (float)(o.max - clip::kMaxLow) / (clip::kMaxHigh - clip::kMaxLow);
     c.Text(L"Keep the last", Rect(in.left, in.top, 120, 14), Weight::Regular, 11.5f, t.textDim);
     c.Text(std::to_wstring(o.max) + L" items", Rect(in.right - 100, in.top - 1, 100, 16), Weight::Semi, 12, t.accentHi, Align::Right);
@@ -691,13 +703,13 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     setui::Toggle(ui, t, "clip.o.wipe", Rect(in.left, ay + kAgeRow, Width(in), kSetupLineH), L"Clear unpinned on restart", o.wipe != 0, wipe);
     if (wipe) o.wipe ^= 1, save = true;
 
-    in = setui::Box(c, t, Rect(x2, y + histH + kGap, half, keyH), L"QUICK KEY");
+    in = setui::Box(c, t, Rect(x2, y + histH + kGap, half, keyH), L"Quick key");
     static const wchar_t* const kKeyNames[clip::kKeys] = {L"Off", L"Alt⇧V", L"Ctrl Alt V", L"Win Alt V", L"Ctrl⇧V"};
     if (int k = setui::Segmented(ui, t, "clip.o.key", Rect(in.left, in.top, Width(in), 26), kKeyNames, clip::kKeys, o.key); k >= 0) o.key = k, save = true;
     setui::Note(c, t, in, in.top + 30, clipKeyOn || !o.key ? L"Opens this panel from any app" : L"Taken by another app: pick another");
 
     float y2 = y + (std::max)(recH, histH + kGap + keyH) + kGap;
-    in = setui::Box(c, t, Rect(view.left, y2, half, pasteH), L"PASTING");
+    in = setui::Box(c, t, Rect(view.left, y2, half, pasteH), L"Pasting");
     bool p[2] = {};
     setui::Toggle(ui, t, "clip.o.paste", Rect(in.left, in.top, Width(in), kSetupLineH), L"Paste into the app on pick", o.paste != 0, p[0]);
     setui::Toggle(ui, t, "clip.o.plain", Rect(in.left, in.top + kSetupLineH, Width(in), kSetupLineH), L"Always paste plain text", o.plain != 0, p[1]);
@@ -705,16 +717,17 @@ void Bar::DrawClipSetup(const Theme& t, const D2D1_RECT_F& area) { // the widget
     if (p[0]) o.paste ^= 1, save = true;
     if (p[1]) o.plain ^= 1, save = true;
 
-    in = setui::Box(c, t, Rect(x2, y2, half, lookH), L"LOOK");
+    in = setui::Box(c, t, Rect(x2, y2, half, lookH), L"Display");
     static const wchar_t* const kViews[] = {L"List", L"Grid"};
     static const wchar_t* const kSizes[] = {L"Compact", L"Normal", L"Large"};
     if (int k = setui::Segmented(ui, t, "clip.o.view", Rect(in.left, in.top, Width(in), 26), kViews, 2, o.view); k >= 0) o.view = k, save = true;
     if (int k = setui::Segmented(ui, t, "clip.o.size", Rect(in.left, in.top + 34, Width(in), 26), kSizes, 3, o.size); k >= 0) o.size = k, save = true;
     const wchar_t* themes[clip::kThemes];
     for (int i = 0; i < clip::kThemes; ++i) themes[i] = clip::ThemeName(i);
-    if (int k = setui::Segmented(ui, t, "clip.o.theme", Rect(in.left, in.top + 68, Width(in), 26), themes, clip::kThemes, o.theme); k >= 0) o.theme = k, save = true, clipLays.clear(), clipPeekId = 0;
+    c.Text(L"Colours for copied code", Rect(in.left, in.top + 68, Width(in), 14), Weight::Regular, 11.5f, t.textDim); // what these seven are: syntax colours, nothing to do with the dock's own look
+    if (int k = setui::Segmented(ui, t, "clip.o.theme", Rect(in.left, in.top + 68 + kCodeLabelH, Width(in), 26), themes, clip::kThemes, o.theme); k >= 0) o.theme = k, save = true, clipLays.clear(), clipPeekId = 0;
 
-    in = setui::Box(c, t, Rect(view.left, y2 + pasteH + kGap, half, neverH), L"NEVER KEEP");
+    in = setui::Box(c, t, Rect(view.left, y2 + pasteH + kGap, half, neverH), L"Never keep");
     float cx = in.left;
     int unlist = -1;
     std::vector<std::wstring> all = o.noApps;

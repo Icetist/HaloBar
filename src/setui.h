@@ -6,6 +6,8 @@ namespace setui {
 
 constexpr float kNoteLine = 14; // a quiet note's line
 
+Color CardFill(const Theme& t); // a card's body, so whatever sits beside one can wear the same
+
 D2D1_RECT_F Box(Canvas& c, const Theme& t, const D2D1_RECT_F& r, const wchar_t* title); // island's card shell; returns its inner area
 int Segmented(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& r, const wchar_t* const* labels, int n, int cur); // the picked one, -1 none
 void Toggle(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& row, const wchar_t* label, bool on, bool& flip); // flip set when clicked
