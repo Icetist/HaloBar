@@ -34,10 +34,10 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 ## ✨ Features
 
 - **Your apps.** Pinned and running apps, in the same order as the Windows taskbar, with live window previews, jump lists, per-app volume on scroll and a **+N** tile when they don't all fit.
-- **Widgets, picked from a gallery.** Now playing, weather, system stats, clipboard, notes, calendar, focus timer and about twenty more, in small, medium and large, dragged wherever you like in edit mode.
+- **Widgets, picked from a gallery.** Now playing, weather, system stats, clipboard, notes, calendar, focus timer and about twenty more, in small, medium and large, dragged wherever you like when you customize the dock.
 - **A clipboard that keeps up.** Fuzzy search, pins, tabs for text, code, links, files, media and colours, code highlighting, colour swatches in any notation, tracking-free links and paste straight into the app you came from.
 - **Quick settings and notifications.** Wi-Fi, Bluetooth, volume, brightness and a dozen toggles, joining networks and pairing devices in place, with your notifications beside a month view.
-- **Your look.** Astraeus' themes (Dark, Light, Glass, Clear or Custom, plus Astraeus' own Starfall when following it), opacity and blur sliders, three sizes, a dock on every screen and any edge.
+- **Your look.** Astraeus' themes (Dark, Light, Glass, Clear or Custom, plus Astraeus' own Starfall when following it), opacity and blur sliders, any size and length, a dock on every screen and any edge.
 - **Out of a game's way.** A fullscreen game gets its screen to itself, while the docks on your other screens keep working.
 
 <details>
@@ -48,7 +48,7 @@ It is a sibling of [Astraeus](https://github.com/Icetist/Astraeus). The two shar
 - **Keyboard, as on Windows.** **Win + 1–9** opens, shows or tucks away the app in that spot, **Win + T** walks the dock with the arrow keys and Enter, and **Win + B** opens the tray.
 - **Widgets, picked from a gallery.** Now playing, recycle bin, weather, system stats, network speed, battery, drives, focus timer, water, clipboard history (text and images), color picker, screenshot, emoji, downloads, a favourite folder, notes, to-do, habits, calendar, world clock, progress of the day and year, quick toggles, volume, search, app switcher and photo. Most come in small, medium and large, and every one shows its real face in the gallery before you add it. Widgets that show words, like weather, battery and network speed, are as wide as what they say.
 - **Space.** Empty room between widgets, as wide as you drag it. When the dock gets crowded, the spaces give their room back to your apps first.
-- **Edit mode.** Right-click the dock and everything in it can be dragged: widgets, dividers you add yourself, even the whole block of apps. Size each widget, set its options or remove it with its ×.
+- **Customize it where it is.** Right-click the dock and the screen dims around it, with a panel above it for everything about the dock: floating or stuck to the edge, a body in your theme, your accent or clear, left, centered or right along the bottom, which status icons show, the clock, the start button and the widget gallery, with undo, redo and reset. Drag the dock's top edge to resize it and its ends to make it longer or shorter, as Astraeus' long pill. Everything in the dock itself can be dragged: widgets, dividers you add yourself, even the whole block of apps. Size each widget, set its options or remove it with its ×.
 - **Status at the end of the row.** Tray, keyboard layout, Bluetooth, network, volume, battery, notifications, quick settings, the clock and show desktop, each one optional. The keyboard layout names itself (ENG UK, ENG INTL) and a click moves to the next one. Apps' own tray flyouts open right over their icon in the dock.
 - **Quick settings.** Wi-Fi, Bluetooth, airplane mode, mobile hotspot, energy saver, night light, microphone, Do Not Disturb, live captions, cast, project, nearby sharing, accessibility and a snip, plus volume, brightness and every app's own volume. Join Wi-Fi networks and pair Bluetooth devices right in the panel.
 - **Notifications and the calendar.** Your notifications beside a month view, with Do Not Disturb and Clear all. New ones rise as small pills, or from Astraeus when it's running. Connect Google Calendar, Outlook or iCloud with your calendar's private link: links are stored encrypted and shared with Astraeus.
@@ -120,8 +120,9 @@ The Windows taskbar steps aside while HaloBar runs and comes back the moment it 
 
 ## 🖱️ Usage
 
-- **Edit the dock:** right-click an empty spot on it, or choose **Customize dock** in settings.
+- **Customize the dock:** right-click an empty spot on it, or choose **Customize dock** in settings. Click the dimmed screen, press **Esc** or **Done** to finish.
 - **Settings:** the gear in the launcher, or **HaloBar settings** in quick settings.
+- **The tour:** a short tour of the dock plays the first time HaloBar starts; **Tour** at the bottom of settings plays it again.
 - **The player:** click the song. Its play button pauses straight from the dock.
 - **Notifications and the calendar:** click the clock.
 - **The tray:** click the arrow, or press **Win + B**.

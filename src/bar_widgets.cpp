@@ -417,6 +417,7 @@ void Bar::WgChar(wchar_t ch) {
     }
     if (ch == VK_ESCAPE) return SetPanel(Panel::None);
     if (wgKind == kWgGallery) { // what's typed searches the catalogue
+        if (ch >= 32 && studioTab != 1) studioTab = 1, ++studioTabNth; // typing turns the editor to its widgets
         if (ch == VK_BACK) {
             if (!draft.empty()) draft.pop_back();
         } else if (ch >= 32 && draft.size() < 40) {
@@ -515,7 +516,7 @@ void Bar::OpenWidget(int w, float x) {
     if (Typing()) SetForegroundWindow(hwnd); // typing goes here while it's open, as the launcher
 }
 
-void Bar::StartEdit() {
+void Bar::StartEdit() { // the dock's editor, over the wallpaper: the dock stays live under it to move and remove widgets
     if (editing) return SetPanel(Panel::None); // asked again: done
     wgKind = kWgGallery;
     wgSel = -1, galleryScroll = 0;
@@ -523,13 +524,17 @@ void Bar::StartEdit() {
     Anchor(W / 2, false);
     SetPanel(Panel::Widget);
     editing = true;
-    SetForegroundWindow(hwnd); // typing searches the catalogue
+    studioTab = 0, ++studioTabNth; // it opens on the dock itself
+    studioBack.clear(), studioAhead.clear();
+    studioNow = StudioSnap(); // undo starts here
+    SetForegroundWindow(hwnd); // typing searches the widgets
 }
 
 // ---- the group in the dock ----
 
 void Bar::DrawWidgets(const Theme& t, float x, float top) { // x: where along the dock they start; top: across it
     Canvas& c = ui.C();
+    spotApps = spotWidgets = {}; // drawn afresh below
     if (editing || !FaceKinds().empty()) faceHost = FaceHost();
     auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) { // the widget's name, on a small pill beside it
         D2D1_RECT_F r = TipRect(over, (std::min)(TextW(name, Weight::Medium, 12) + 20, 300.0f));
@@ -567,6 +572,8 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) { // x: where along th
         if (editing && i == dragSlot) sx = Along(input.mouse) - wgGrab; // the held one rides the mouse
         D2D1_RECT_F r = Spot(sx, w, top);
         x += w + kWegGap;
+        if (s.kind == kWgApps) spotApps = r; // the tour points here
+        else if (s.kind != kWgSpace && s.kind != kWgDivider) spotWidgets = spotWidgets.right > spotWidgets.left ? Union(spotWidgets, r) : r;
         bool open = wgOpen && wgKind == s.kind;
         if (editing) {
             bool fixed = s.kind == kWgApps; // the apps move, but stay
@@ -647,7 +654,10 @@ void Bar::DrawWidgets(const Theme& t, float x, float top) { // x: where along th
         Ui::Hit h = ui.Button(Ui::Id("wg.add"), r);
         c.Stroke(Inset(r, 3, 3), TileRadius(), t.accent.Alpha(h.hover ? 0.9f : 0.5f), 1.4f);
         c.Icon(glyph::Add, {(r.left + r.right) / 2, (r.top + r.bottom) / 2}, 20, t.accentHi);
-        if (h.clicked) wgSel = -1, galleryScroll = 0;
+        if (h.clicked) {
+            wgSel = -1, galleryScroll = 0;
+            if (studioTab != 1) studioTab = 1, ++studioTabNth; // the editor turns to its widgets
+        }
         if (h.hover) tip(r, L"Add widgets");
     }
 }

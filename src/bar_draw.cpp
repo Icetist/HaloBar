@@ -79,7 +79,7 @@ constexpr float kSideGap = 10; // between a side dock and the panel beside it
 
 bool Bar::Layout(float dt) {
     // the dock hides while a window overlaps it; the toolbar always stays
-    float hideTo = AutoHide() && covered && !peek && !(AnyOpen() && !cardDown) && !card.Shown() && !Inside(wegHit, input.mouse) ? 1.0f : 0.0f;
+    float hideTo = AutoHide() && covered && !peek && !(AnyOpen() && !cardDown) && !card.Shown() && tourStep < 0 && !Inside(wegHit, input.mouse) ? 1.0f : 0.0f; // the tour keeps it up
     bool sinking = anim::Approach(sink, hideTo, hideTo > 0 ? 7.0f : 12.0f, dt); // slips away gently, comes back quick
     // the top bar: off, or slipping up while a window reaches under it, back when the mouse touches the top edge
     float topTo = TopAuto() && topCovered && !topPeek && !(AnyOpen() && cardDown) && !Inside(capL, input.mouse) && !Inside(capR, input.mouse) ? 1.0f : 0.0f;
@@ -107,7 +107,11 @@ bool Bar::Layout(float dt) {
         if (s.kind == kWgSpace) spaces.push_back((float)(s.size >= kSpaceMin ? s.size : kSpaceDef)), others += kWegGap;
         else if (float w = s.kind == kWgApps ? 0 : WidgetW(s.kind, s.size); w > 0 || s.kind != kWgMedia) others += w + kWegGap; // a song switched off takes no room
     float ends = 2 * kWegPad + kSlot + kWegSep + others + (editing ? kIcon + kWegGap : 0) + (TopOn() ? 0 : kWegSep + statusW);
-    float room = (Vert() ? winH : W) - 2 * kIcon - ends; // the screen's edges keep a margin
+    float dockSpan = Vert() ? winH : W, margin = Margin(); // the screen along the dock; floating off the edge, or stuck to it
+    bool wideRow = Fixed(); // to one side, or stretched over a maximized window
+    int lenPm = wideRow ? 0 : LenNow();
+    float ownLen = lenPm > 0 ? (std::clamp)(dockSpan * lenPm / prefs::Settings::kLenMax, ends + kIcon + kWegGap, dockSpan - 2 * margin) : 0; // a length of its own, never so short its widgets and the "+N" tile can't sit in it
+    float room = (ownLen > 0 ? ownLen : dockSpan - 2 * kIcon) - ends; // fitting its contents, the screen's edges keep a margin
     float free = room - apps * kAppSlot; // what the spaces may take with every app at full size
     spaceCap = SpaceLevel(spaces, free, (float)kSpaceMin);
     float spaced = 0;
@@ -115,6 +119,8 @@ bool Bar::Layout(float dt) {
     spaceSlack = (std::max)(0.0f, free - spaced);
     ends += spaced, room -= spaced;
     SyncTrayOnly();
+    int every = apps + (int)trayOnly.size(); // what fitting would hold, every app at full size, whatever length it has now
+    fitLen = (std::min)(dockSpan - 2 * kIcon, ends + (every > 0 ? every * kAppSlot - kWegGap : 0));
     int extra = (std::min)((int)trayOnly.size(), (std::max)(0, (int)(room / kSlotMin) - 1)); // background apps from the tray, after the rest: they take room too
     trayOnly.resize((size_t)extra);
     slotW = apps + extra > 0 ? (std::clamp)(room / (apps + extra), kSlotMin, kAppSlot) : kAppSlot;
@@ -124,23 +130,22 @@ bool Bar::Layout(float dt) {
     int shown = dockCount + extra;
     appsW = (shown > 0 ? shown * slotW - kWegGap : 0) + (moreN > 0 ? (shown > 0 ? kWegGap : 0) + kIcon : 0);
     rowContent = ends + appsW;
-    bool wideRow = !Vert() && (cfg.align || (cfg.adaptive && maxHere && !AutoHide())); // to one side, or stretched over a maximized window
-    float want = wideRow ? W - 2 * kWegMargin : rowContent; // to one side: the dock runs the screen's width, its two groups at the ends
-    if (rowW <= 0) rowW = want; // first frame: no ease in from nothing
+    float want = wideRow ? W - 2 * margin : ownLen > 0 ? ownLen : rowContent; // to one side: the dock runs the screen's width, its two groups at the ends
+    if (rowW <= 0 || studioGrip == kGripStart || studioGrip == kGripEnd) rowW = want; // first frame: no ease in from nothing; an end being dragged follows the mouse
     moving = anim::Approach(rowW, want, 14, dt) || moving;
-    float floorY = winH - kWegMargin + sink * (kWegH + kWegMargin + 4); // tucked: the whole dock below the screen's edge
+    float floorY = winH - margin + sink * (kWegH + margin + 4); // tucked: the whole dock below the screen's edge
     rowTop = floorY - kWegH;
     wegR = {W / 2 - rowW / 2, rowTop, W / 2 + rowW / 2, floorY};
     wegHit = {wegR.left, rowTop, wegR.right, winH}; // down to the screen's edge, so the mouse can rest there
     if (Vert()) { // at a side: a column, centered on the screen's height; tucked, it slides out past that edge
-        float out = sink * (kWegH + kWegMargin + 4), left = cfg.edge == 1 ? kWegMargin - out : W - kWegMargin - kWegH + out, top = winH / 2 - rowW / 2;
-        rowTop = winH - kWegMargin - kWegH; // panels still lay out as over a bottom dock; cardOff carries them beside the column
+        float out = sink * (kWegH + margin + 4), left = cfg.edge == 1 ? margin - out : W - margin - kWegH + out, top = winH / 2 - rowW / 2;
+        rowTop = winH - margin - kWegH; // panels still lay out as over a bottom dock; cardOff carries them beside the column
         wegR = {left, top, left + kWegH, top + rowW};
         wegHit = cfg.edge == 1 ? D2D1_RECT_F{0, top, wegR.right, wegR.bottom} : D2D1_RECT_F{wegR.left, top, W, wegR.bottom};
     }
     if (!moon) { // the dock floats without reserving room: astraeus' sidebar reads how far it rises, to end above it
         static int reachSaved = -1;
-        int reach = Vert() ? 0 : (int)std::lround((kWegMargin + kWegH) * scale); // at rest, whatever this frame's tuck
+        int reach = Vert() ? 0 : (int)std::lround((margin + kWegH) * scale); // at rest, whatever this frame's tuck
         if (reach != reachSaved) prefs::SaveNum(L"DockReach", reach), reachSaved = reach;
     }
 
@@ -149,7 +154,7 @@ bool Bar::Layout(float dt) {
     float tr = anim::Clamp01(traySpring.value / TrayRise()), set = anim::Clamp01(setSpring.value / kSetRise);
     float sheet = anim::Clamp01(sheetSpring.value / SheetRise());
     float qs = anim::Clamp01(qsSpring.value / QuickRise()), cal = anim::Clamp01(calSpring.value / CalRise()), ln = anim::Clamp01(launchSpring.value / LaunchRise());
-    float wg = anim::Clamp01(wgSpring.value / WidgetRise());
+    float wgRise = WidgetRise(), wg = wgRise > 0 ? anim::Clamp01(wgSpring.value / wgRise) : 0; // edit mode's gallery lives in the editor over the wallpaper: no rise
     float gridW = (std::clamp)(TrayCount(), 1, kTrayCols) * kTrayCell + 40; // the tray grid, with its margins
     float wide = 0, openK = 0;
     for (auto [to, k] : {std::pair{kMediaW, open}, std::pair{kPeekW, pk}, std::pair{gridW, tr}, std::pair{(std::min)(kSetW, W - 24), set}, std::pair{kSheetW, sheet},

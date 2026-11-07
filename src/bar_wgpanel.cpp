@@ -1,5 +1,5 @@
 // What rises over the dock from a widget: the forecast, the load, the clipboard, a folder, a note, the day's events, lists,
-// clocks, and edit mode's gallery, where widgets are picked by category, previewed live, sized and set up.
+// clocks; and the gallery in the dock's editor, where widgets are picked by category, previewed live, sized and set up.
 #include "bar.h"
 #include "duration.h"
 
@@ -11,6 +11,7 @@
 #include <cstdio>
 
 #include "glyphs.h"
+#include "setui.h"
 #include "widgets.h"
 
 int WgToday();
@@ -29,7 +30,7 @@ constexpr int kFileCols = 4;
 constexpr float kFileCell = 92, kFileRowH = 84;
 constexpr int kGalCols = 3;
 constexpr float kCardH = 106, kGalGap = 9, kTabsH = 30, kSelH = 52;
-constexpr float kGalleryRise = 470;
+constexpr float kSongW = 170; // the song's switch, beside the search
 
 }
 
@@ -40,7 +41,7 @@ float Bar::WidgetRise() const {
     if (IsFace(wgKind)) return faces::PanelH(wgKind - kWgFaces, kWgW);
     auto list = [&](size_t n) { return kHead + 14 + (float)(std::max)((size_t)1, (std::min)(n, (size_t)kListRows)) * kRow + 46; };
     switch (wgKind) {
-    case kWgGallery: return kGalleryRise;
+    case kWgGallery: return 0; // it lives in the dock's editor, over the wallpaper: the island doesn't grow for it
     case kWgWeather: return 214;
     case kWgStats: return 176;
     case kWgClip: return ClipRise();
@@ -92,10 +93,6 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
         closeOnRight = false; // a list's rows take the right click themselves
     }
     switch (wgKind) {
-    case kWgGallery:
-        DrawGallery(t, r);
-        closeOnRight = false;
-        break;
     case kWgWeather: {
         head(L"WEATHER");
         if (!wx.valid) {
@@ -402,17 +399,15 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         return h.clicked;
     };
     faceHost = FaceHost();
-    c.TextSp(L"CUSTOMIZE DOCK", Rect(r.left, r.top, 130, 14), Weight::Medium, 10, t.textLow, 1.4f);
-    D2D1_RECT_F find = Rect(r.left + 134, r.top - 6, Width(r) - 134 - 80, 26); // typing searches every widget
+    D2D1_RECT_F find = Rect(r.left - 6, r.top - 6, Width(r) + 12 - kSongW - 16, 26); // typing searches every widget
     c.Fill(find, 13, t.text.Alpha(0.06f));
     c.Icon(glyph::Search, {find.left + 15, find.top + 13}, 14, t.textDim);
     D2D1_RECT_F words = {find.left + 28, find.top, find.right - 8, find.bottom};
     if (draft.empty()) c.Text(L"Type to search widgets", words, Weight::Regular, 11.5f, t.textLow);
     else c.Text(draft + (Caret() ? L"│" : L""), words, Weight::Regular, 11.5f, t.text);
-    if (chip(Ui::Id("gal.done"), Rect(r.right - 70, r.top - 6, 70, 26), L"Done", true)) {
-        SetPanel(Panel::None);
-        return;
-    }
+    bool song = false; // the song is a widget like the rest: whether it shows lives here, beside them
+    setui::Toggle(ui, t, "gal.song", Rect(r.right + 6 - kSongW, r.top - 6, kSongW, 26), L"Song in the dock", cfg.song != 0, song);
+    if (song) SetDock(&prefs::Settings::song, L"Song", cfg.song ? 0 : 1);
 
     // the picked widget: its size and its options, or how edit mode works
     float y = r.top + 26;

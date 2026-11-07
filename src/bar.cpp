@@ -220,7 +220,7 @@ bool Bar::Create(HINSTANCE instance) {
     shellNow = shellTo; // start on the final colors, no fade at boot
     mediaNow = mediaTo;
     shellT = mediaT = 1;
-    if (Clear()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // the right ink soon after start, not on the slow look
+    if (ClearDock()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // the right ink soon after start, not on the slow look
     ArmClock();
     radios.Start(hwnd, WM_APP_RADIOS);
     SyncAudio();
@@ -341,7 +341,7 @@ void Bar::Reserve() {
         APPBARDATA sb = {sizeof(sb)};
         sb.hWnd = shelf;
         if (!shelfBar) shelfBar = SHAppBarMessage(ABM_NEW, &sb) != FALSE;
-        LONG px = (LONG)std::lround(kShelfH * scale);
+        LONG px = (LONG)std::lround(ShelfH() * scale);
         sb.uEdge = cfg.edge == 1 ? ABE_LEFT : cfg.edge == 2 ? ABE_RIGHT : ABE_BOTTOM; // the strip is kept free on the dock's own edge
         sb.rc = monitor;
         if (sb.uEdge == ABE_LEFT) sb.rc.right = monitor.left + px;
@@ -513,7 +513,8 @@ void Bar::SyncRegion() { // the window takes clicks only on the toolbar, the doc
         return r.right > r.left ? RECT{(LONG)std::floor(r.left * scale) - 1, (LONG)std::floor(r.top * scale) - 1, (LONG)std::ceil(r.right * scale) + 1, (LONG)std::ceil(r.bottom * scale) + 1} : RECT{};
     };
     std::vector<RECT> want;
-    if (TopOn() && topSink > 0.5f && !topPeek) want.push_back({0, 0, winPxW - (LONG)std::lround(140 * scale), 2}); // slipped up: the top edge calls it back, all but the corner where windows keep their close button
+    if (FullPass()) want.push_back({0, 0, winPxW, winPxH}); // the dock's editor or the tour: the whole screen, its dim takes the click
+    else if (TopOn() && topSink > 0.5f && !topPeek) want.push_back({0, 0, winPxW - (LONG)std::lround(140 * scale), 2}); // slipped up: the top edge calls it back, all but the corner where windows keep their close button
     else if (TopOn()) {
         if (capL.right > capL.left) want.push_back(px(capL));
         if (capR.right > capR.left) want.push_back(px(capR));
@@ -636,10 +637,10 @@ void Bar::CheckCovered() {
     }
     if (topCovered != wasTop) Redraw();
     if (AutoHide() && tasks) {
-        RECT spot = {monitor.left + (LONG)std::floor(wegR.left * scale), monitor.bottom - (LONG)std::lround((kWegH + kWegMargin) * scale), monitor.left + (LONG)std::ceil(wegR.right * scale),
+        RECT spot = {monitor.left + (LONG)std::floor(wegR.left * scale), monitor.bottom - (LONG)std::lround((kWegH + Margin()) * scale), monitor.left + (LONG)std::ceil(wegR.right * scale),
                      monitor.bottom}; // where the dock rests
         if (Vert()) { // at a side: the column's band along that edge
-            LONG across = (LONG)std::lround((kWegH + kWegMargin) * scale);
+            LONG across = (LONG)std::lround((kWegH + Margin()) * scale);
             spot = {cfg.edge == 1 ? monitor.left : monitor.right - across, ToScreen({0, wegR.top}).y, cfg.edge == 1 ? monitor.left + across : monitor.right, ToScreen({0, wegR.bottom}).y};
         }
         for (const auto& a : tasks->Apps())
@@ -968,7 +969,7 @@ void Bar::SetPref(int& field, const wchar_t* name, int value) {
     field = value;
     prefs::SaveNum(name, value);
     SyncLook(); // look and accent take effect with island's crossfade
-    bool place = &field == &cfg.size || &field == &cfg.room || &field == &cfg.top;
+    bool place = &field == &cfg.zoom || &field == &cfg.room || &field == &cfg.top;
     PostMessageW(hwnd, WM_APP_RESTYLE, place ? 1 : 0, 0); // never mid-frame: the canvas drawing this very button would be freed under it
     if (&field == &cfg.pills && !moon) Banners(Hush());
     if (&field == &cfg.song && !cfg.song && mediaOpen) SetMediaOpen(false);
@@ -1376,7 +1377,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         int ai = tasks->AppOf(info->hwnd);
         auto it = ai >= 0 ? slots.find(tasks->Apps()[ai].key) : slots.end();
         if (it != slots.end()) { // tucked away: still its spot, at the screen's edge, so windows animates instead of fading
-            float lift = sink * (kWegH + kWegMargin + 4);
+            float lift = sink * (kWegH + Margin() + 4);
             D2D1_POINT_2F d = !Vert() ? D2D1_POINT_2F{0, -lift} : D2D1_POINT_2F{cfg.edge == 1 ? lift : -lift, 0}; // back to where it rests
             POINT a = ToScreen({it->second.left + d.x, it->second.top + d.y}), b = ToScreen({it->second.right + d.x, it->second.bottom + d.y});
             info->rc = {a.x, a.y, b.x, b.y};
@@ -1536,7 +1537,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         Redraw();
         return 0;
     case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, hand ? IDC_HAND : IDC_ARROW));
+        SetCursor(LoadCursorW(nullptr, cursorNow ? cursorNow : hand ? IDC_HAND : IDC_ARROW)); // the dock editor's handles show which way they pull
         return TRUE;
     case WM_TIMER:
         KillTimer(hwnd, wp); // all timers are one-shot
@@ -1588,7 +1589,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             RECT wa{};
             SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
             Log("appbar moved");
-            if ((barPx > 0 && wa.top < monitor.top + barPx) || (shelfBar && wa.bottom > monitor.bottom - (LONG)std::lround(kShelfH * scale))) Reserve(); // only if our strip really went: claiming it again tells every bar, and they answer
+            if ((barPx > 0 && wa.top < monitor.top + barPx) || (shelfBar && wa.bottom > monitor.bottom - (LONG)std::lround(ShelfH() * scale))) Reserve(); // only if our strip really went: claiming it again tells every bar, and they answer
             break;
         }
         case kUpdateTimer:
@@ -1610,7 +1611,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case kCoverTimer:
             if (full && !FullInFront()) SetFull(false); // the game or video left the front, or left fullscreen: back at once, not at the slow look
             CheckCovered();
-            if (LookNow() == 2 || Clear()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // what's behind the glass may have changed: one look once things settle, a screen read is costly
+            if (LookNow() == 2 || ClearDock()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // what's behind the glass may have changed: one look once things settle, a screen read is costly
             break;
         case kTitleTimer: // only the top bar shows titles: the dock's pixels stay as they are
             KillTimer(hwnd, kTitleTimer);
@@ -1659,6 +1660,11 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case kShadeTimer:
             KillTimer(hwnd, kShadeTimer);
             SampleShade();
+            break;
+        case kTourTimer:
+            if (tourStep >= 0) break;
+            if (full || AnyOpen() || editing) SetTimer(hwnd, kTourTimer, kTourDelayMs, nullptr); // a game or a panel up: a little later
+            else TourStart();
             break;
         case kPeekTimer:
             peek = topPeek = false;
@@ -1729,7 +1735,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (HasWg(kWgWeather)) RefreshWx(); // cached for half an hour: fetches only when that's up
             if (HasWg(kWgPhoto) && shadeTick % 360 == 0) PickPhoto(); // another picture each hour
             if (HasWg(kWgFiles) && shadeTick % 6 == 0 && !(wgOpen && wgKind == kWgFiles) && !Hidden()) LoadFiles(L""); // the newest download, each minute
-            if (++shadeTick % 3 == 0 || Clear()) SampleShade(); // clear's ink has more riding on it: every tick. a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
+            if (++shadeTick % 3 == 0 || ClearDock()) SampleShade(); // clear's ink has more riding on it: every tick. a page can scroll from dark to white without any window moving; a screen read is costly, so every 30 s
             BelowIsland(); // astraeus may have started since: its hover strip goes back over the top bar
             if (auto was = promoted; SyncPromoted(), promoted != was) Redraw(); // an icon moved in or out of the taskbar in windows' settings
             if (!notifPolling && PillsLive()) notifPolling = true, SetCoalescableTimer(hwnd, kNotifPollTimer, kNotifQuickMs, nullptr, 500); // pills can rise again: the quick look comes back
@@ -2092,14 +2098,23 @@ void Bar::Frame() {
     skyDrift = shellNow.stars && !look.reduceMotion; // starfall's orb: frozen where it is unless a bar is hovered or a dropdown hangs open
     bool orbTopLive = skyDrift && (Inside(drawnTop, input.mouse) || (AnyOpen() && cardDown));
     bool orbBotLive = skyDrift && (Inside(drawnBottom, input.mouse) || Inside(wegHit, input.mouse) || (AnyOpen() && !cardDown));
-    bool fullFrame = fullNext || springs || themes || easing || Inside(mediaR, input.mouse) || !mediaCalm || AnyOpen() || card.Shown() || orbTopLive || orbBotLive; // the fast frames repaint only a dock at rest: a fading hover, a panel's or a card's shadow over the dock would show as a lighter square
+    constexpr float kStudioIn = 9, kStudioOut = 12; // the editor comes up softly and goes a little quicker
+    float studioWas = studioK;
+    if (look.reduceMotion) studioK = editing ? 1.0f : 0.0f;
+    bool studioMoving = anim::Approach(studioK, editing ? 1.0f : 0.0f, editing ? kStudioIn : kStudioOut, dt) || studioK != studioWas;
+    float tourWas = tourK;
+    if (look.reduceMotion) tourK = tourStep >= 0 ? 1.0f : 0.0f;
+    studioMoving = anim::Approach(tourK, tourStep >= 0 ? 1.0f : 0.0f, kStudioIn, dt) || tourK != tourWas || studioMoving; // the tour fades as the editor does
+    if (studioWas > 0.001f && !Studio()) SetTimer(hwnd, kShadeTimer, 500, nullptr); // the editor's gone: a clear dock's ink is read again off the wallpaper
+    bool fullFrame = fullNext || springs || themes || easing || studioMoving || FullPass() || Inside(mediaR, input.mouse) || !mediaCalm || AnyOpen() || card.Shown() || orbTopLive || orbBotLive; // the fast frames repaint only a dock at rest: a fading hover, a panel's or a card's shadow over the dock would show as a lighter square
 
     const Theme& t = shellNow;
-    bool clear = Clear();
-    Theme clearTop, clearBot;
-    if (clear) clearTop = theme::ClearInk(t, shadeTopNow), clearBot = theme::ClearInk(t, shadeBotNow); // eased: the ink crosses over, it doesn't snap
+    bool clear = Clear(), clearDock = ClearDock(), ownInk = clearDock || AccentDock(); // the dock may wear its own body: nothing but ink, or the accent
+    Theme clearTop, dockInk;
+    if (clear) clearTop = theme::ClearInk(t, shadeTopNow); // eased: the ink crosses over, it doesn't snap
+    if (ownInk) dockInk = clearDock ? theme::ClearInk(t, shadeBotNow) : DockTheme(t);
     const Theme& tTop = clear ? clearTop : t;
-    const Theme& tBot = clear ? clearBot : t;
+    const Theme& tBot = ownInk ? dockInk : t;
     if (!fullFrame) { // only the toolbar's little bars could have moved: step them first, and draw nothing at all if no bar moved by half a pixel
         barsMoving = StepBars(dt, now);
         bool visible = false;
@@ -2114,11 +2129,11 @@ void Bar::Frame() {
         skyT = orbBot;
         D2D1_RECT_F area = Inset(barsRect, -2, -3), reach = Inset(area, -1 / scale, -1 / scale); // the pass rounds out to whole pixels
         bool ok = Pass(area, [&] { // only the bars' own square: the plate, the pill's tint, the bars; cover and text stay as drawn
-            inkNow = clear ? &clearBot : nullptr;
-            if (clear) {} // no plate, so no shadow under it
+            inkNow = ownInk ? &dockInk : nullptr;
+            if (clearDock) {} // no plate, so no shadow under it
             else if (Vert()) canvas->Glow({cfg.edge == 1 ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // the column's shadow, as DrawWegCol lays it
             else canvas->Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // the dock's shadow first, as DrawWeg lays it: through glass, a square without it reads lighter
-            PaintPlate(wegR, WegRadius(), t, shadeBotNow, &reach); // the square sits well inside the dock: no curves to work out, no rim
+            PaintPlate(PlateR(wegR), WegRadius(), tBot, shadeBotNow, &reach); // the square sits well inside the dock: no curves to work out, no rim
             float pr = (std::min)(Width(mediaR), Height(mediaR)) / 2;
             canvas->Fill(mediaR, Within(reach, mediaR, pr, 1.5f) ? 0 : pr, tBot.text.Alpha(0.05f)); // the pill at rest, as DrawMediaTile paints it unhovered; upright in a side dock
             DrawBars(0, 0, false);
@@ -2161,30 +2176,58 @@ void Bar::Frame() {
     barsMoving = StepBars(dt, now); // the song's little bars, stepped once whichever pass draws them
     ui.Begin(*canvas, input, dt, now);
     bool ok = true;
-    skyT = orbTop;
-    if (drawTop) ok = Pass(topDirty, [&] {
-        inkNow = clear ? &clearTop : nullptr;
-        DrawToolbar(tTop);
-        inkNow = nullptr;
-        if (cardDown) DrawCard(t, shape.Get());
-        ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
-    });
-    else ui.KeepHits(drawnTop);
-    bool tb = ui.Busy(), ta = ui.Ambient();
-    if (drawTop) topLive = tb || ta;
-    ui.Quiet();
-    if (drawBot) tipNow = {}, trayAt.clear(); // the dock's pass names whatever is hovered again, and places the tray icons again
-    skyT = orbBot;
-    if (!drawBot) ui.KeepHits(Union(drawnBottom, wegHit));
-    else ok = ok && Pass(botDirty, [&] {
-        inkNow = clear ? &clearBot : nullptr;
-        DrawWeg(tBot);
-        inkNow = nullptr;
-        if (!cardDown) DrawCard(t, shape.Get());
-        ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
-    });
-    if (drawBot) botLive = ui.Busy() || ui.Ambient();
-    ui.Merge(tb, ta);
+    cursorNow = nullptr; // the editor's handles name theirs as they're drawn
+    if (FullPass()) { // the dock's editor or the tour: one pass over the whole screen, the dim under the dock and the panel or card over it
+        D2D1_RECT_F all = {0, 0, W, winH};
+        tipNow = {}, trayAt.clear();
+        skyT = orbBot;
+        ok = Pass(all, [&] {
+            if (Studio()) {
+                DrawStudio(t, tBot, ownInk ? &dockInk : nullptr);
+            } else { // the tour: the dock as it is, shown but not touched
+                constexpr D2D1_POINT_2F kAway = {1e4f, 1e4f};
+                Input was = input;
+                input.mouse = input.pressPos = {-1e4f, -1e4f}, input.pressed = input.released = input.rclick = false;
+                ui.Shift(kAway), ui.Block(true);
+                inkNow = ownInk ? &dockInk : nullptr;
+                DrawWeg(tBot);
+                inkNow = nullptr;
+                ui.Block(false), ui.Shift({-kAway.x, -kAway.y});
+                input = was;
+            }
+            if (shape) DrawCard(t, shape.Get()); // a panel still folding away as the editor or the tour came up
+            if (tourK > 0.001f) DrawTour(t);
+            ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
+        });
+        top = {}, bottom = all;
+        drawTop = topLive = false, drawBot = true;
+        botLive = ui.Busy() || ui.Ambient();
+    } else {
+        skyT = orbTop;
+        if (drawTop) ok = Pass(topDirty, [&] {
+            inkNow = clear ? &clearTop : nullptr;
+            DrawToolbar(tTop);
+            inkNow = nullptr;
+            if (cardDown) DrawCard(t, shape.Get());
+            ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
+        });
+        else ui.KeepHits(drawnTop);
+        bool tb = ui.Busy(), ta = ui.Ambient();
+        if (drawTop) topLive = tb || ta;
+        ui.Quiet();
+        if (drawBot) tipNow = {}, trayAt.clear(); // the dock's pass names whatever is hovered again, and places the tray icons again
+        skyT = orbBot;
+        if (!drawBot) ui.KeepHits(Union(drawnBottom, wegHit));
+        else ok = ok && Pass(botDirty, [&] {
+            inkNow = ownInk ? &dockInk : nullptr;
+            DrawWeg(tBot);
+            inkNow = nullptr;
+            if (!cardDown) DrawCard(t, shape.Get());
+            ui.DrawFocus(t.accentHi, t.onAccent.Alpha(1));
+        });
+        if (drawBot) botLive = ui.Busy() || ui.Ambient();
+        ui.Merge(tb, ta);
+    }
     if (!drawTop) top = drawnTop; // untouched: the surface still holds what it held
     if (!drawBot) bottom = drawnBottom;
     ui.End();
@@ -2220,6 +2263,7 @@ void Bar::Frame() {
         took = true;
         SetTimer(hwnd, kReserveTimer, kReserveSettleMs, nullptr); // once windows' taskbar has fully let go, the strip at the top is ours
         if (!moon) taskbar::Take(), ClaimTray(), HaloIcon(true), SyncKeyHook(), SetTimer(hwnd, kGhostTimer, 4000, nullptr); // apps had their chance to give us their icons: the rest come from windows' snapshot
+        if (!moon && prefs::ReadNum(L"TourNext", 1)) SetTimer(hwnd, kTourTimer, kTourDelayMs, nullptr); // the tour, on the main dock, while its switch is on: everyone gets it once
         if (HMODULE u = GetModuleHandleW(L"user32.dll"); u && !moon) { // user32's unnamed-in-the-docs taskman: the window asked where a minimizing window flies
             using GetTm = HWND(WINAPI*)();
             using SetTm = BOOL(WINAPI*)(HWND);
@@ -2237,7 +2281,7 @@ void Bar::Frame() {
     }
 
     bool asked = needsFrame; // a click during the frame asked for another (the player opening, say)
-    bool busy = springs || themes || easing || ui.Busy() || asked;
+    bool busy = springs || themes || easing || studioMoving || ui.Busy() || asked;
     bool ambient = ui.Ambient() || barsMoving;    fullNext = fullNext || busy || ui.Ambient(); // only the toolbar's bars can ride on a partial frame
     bool orbing = orbTopLive || orbBotLive; // hovered or open: the orb keeps drifting, ~20 fps when nothing else moves
     needsFrame = busy || ambient || orbing;

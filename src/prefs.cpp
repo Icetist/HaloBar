@@ -94,7 +94,8 @@ Settings Load() {
     s.appsTheme = num(L"AppsTheme", 0, 0, 1);
     s.otherSet = {Read(kBarKey, L"LookApps", s.look) == Settings::kClear ? Settings::kClear : num(L"LookApps", s.look, -1, 3), num(L"AccentApps", s.accent, -1, 1), Read(kBarKey, L"AccentHexApps", s.accentHex) & 0xFFFFFF,
                   Read(kBarKey, L"CustomBgApps", s.customBg) & 0xFFFFFF, num(L"GlassBlurApps", s.blur, 0, 100), num(L"OpacityApps", s.opacity, Settings::kMinOpacity, 100), num(L"GlassTintApps", s.glassTint, -1, 0xFFFFFF)}; // never set: the desktop's
-    s.size = num(L"Size", s.size, 0, 2);
+    int sized = Read(kBarKey, L"Size", -1); // the old three sizes carry over until the dock is first dragged to one of its own
+    s.zoom = num(L"Zoom", sized == 1 ? 100 : sized == 2 ? 112 : Settings::kZoomDef, Settings::kZoomMin, Settings::kZoomMax);
     s.room = num(L"Room", s.room, 0, 1);
     s.widgets = Read(kBarKey, L"Widgets", s.widgets) & 0x3FF;
     s.mods = Read(kBarKey, L"Mods", s.mods) & 0xFFF;
@@ -115,6 +116,9 @@ Settings Load() {
     s.startIcon = num(L"StartIcon", s.startIcon, 0, 1); // the old sparkle face reads as halobar's
     s.hoverPlay = num(L"HoverPlay", s.hoverPlay, 0, 1);
     s.date = num(L"Date", s.date, 0, 1);
+    s.dockFloat = num(L"DockFloat", s.dockFloat, 0, 1);
+    s.dockBody = num(L"DockBody", s.dockBody, Settings::kBodyTheme, Settings::kBodyClear);
+    s.dockLen = num(L"DockLen", s.dockLen, Settings::kLenFit, Settings::kLenMax);
     s.a11yContrast = num(L"A11yContrast", s.a11yContrast, Settings::kContrastAuto, Settings::kContrastOff);
     s.a11yFollow = num(L"A11yFollowText", s.a11yFollow, 0, 1);
     s.a11yText = num(L"A11yText", s.a11yText, Settings::kTextMin, Settings::kTextMax);

@@ -31,7 +31,8 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int accent = kFollow; // kFollow, 0 wallpaper, 1 the hex below
     int accentHex = 0x5B8CFF;
     int customBg = 0x121826; // the custom look's background, off the wheel
-    int size = 1; // 0 compact, 1 normal, 2 large
+    static constexpr int kZoomMin = 80, kZoomMax = 125, kZoomDef = 90; // the dock's size, percent: its edge dragged in its editor; compact to start
+    int zoom = kZoomDef;
     int pills = 1; // 1 new notifications rise from the island as pills, and windows' own banners stay quiet; 0 windows shows its banners
     int launcher = 1; // 1 the logo opens halobar's launcher, 0 windows' own start
     int room = 1; // the dock. 1 auto-hide: windows take the whole screen and it slips away under them; 0 always shown, its strip kept free
@@ -48,6 +49,11 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int screens = 1; // 0 the dock on one screen, the one picked or the main one; 1 a dock on every screen, as windows' own taskbar
     int hoverPlay = 0; // resting on the song opens the player; off: a click does
     int date = 1; // the date under the time
+    int dockFloat = 1; // 1 the dock floats off the screen's edge, 0 it's stuck to it
+    enum { kBodyTheme, kBodyAccent, kBodyClear };
+    int dockBody = kBodyTheme; // the dock's body: the look's material, the accent, or nothing but its ink
+    static constexpr int kLenFit = 0, kLenMax = 1000;
+    int dockLen = kLenFit; // its length in thousandths of the screen's, its ends dragged in its editor; 0 fits what's in it
     int clock24 = kFollow; // kFollow = the system's clock format, 0 12-hour, 1 24-hour
     enum { kContrastAuto, kContrastOn, kContrastOff };
     static constexpr int kTextMin = 100, kTextMax = 200;

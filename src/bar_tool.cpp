@@ -42,7 +42,7 @@ void Bar::PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float s
     Canvas& c = *canvas;
     constexpr float kAa = 1.5f; // antialiasing's reach
     float rimW = t.glass ? 1.1f : 1.0f;
-    if (Clear()) return; // no material at all: the ink sits straight on the desktop
+    if (ClearDock()) return; // no material at all: the ink sits straight on the desktop
     bool flat = only && Within(*only, r, radius, kAa); // a pass that only touches its middle: a plain rect paints the same pixels without the curves
     bool rim = !only || !Within(*only, r, radius + rimW / 2, rimW + kAa); // and the outline can't reach it (its inner edge: inset by its width, the curve by half): not drawn at all
     float fr = flat ? 0 : radius;
@@ -64,12 +64,11 @@ ComPtr<ID2D1Geometry> Bar::Chrome() {
     auto add = [&](const D2D1_RECT_F& r, float radius) {
         if (r.right > r.left && SUCCEEDED(gfx::D2D()->CreateRoundedRectangleGeometry({r, radius, radius}, &geo[n]))) parts[n] = geo[n].Get(), ++n;
     };
-    if (!Clear()) { // clear has no body there: only its panels get the blur
-        add(capL, 0); // the top bar's strip, square to the screen's edges
-        add(wegDrawn, WegRadius());
-    }
+    if (!Clear()) add(capL, 0); // the top bar's strip, square to the screen's edges; clear has no body there
+    if (!ClearDock() && wegDrawn.right > wegDrawn.left) add(PlateR(wegDrawn), WegRadius()); // a dock of nothing but ink: no blur under it
     D2D1_RECT_F c = CardOnScreen();
     add(c, (std::min)(CardRadius(), Height(c) / 2));
+    if (Studio()) add(StudioRect(), kStudioRadius); // the editor's panel reads as glass too
     ComPtr<ID2D1GeometryGroup> g;
     if (n == 0 || FAILED(gfx::D2D()->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, parts, n, &g))) return nullptr;
     return g;
@@ -515,9 +514,9 @@ D2D1_RECT_F Bar::DockArea() const {
 void Bar::DrawWegCol(const Theme& t) { // the same dock, top to bottom: the logo, the apps and the widgets, the status
     Canvas& c = ui.C();
     bool left = cfg.edge == 1;
-    if (!Clear()) c.Glow({left ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow on the screen's side
-    PaintPlate(wegR, WegRadius(), t, shadeBotNow);
-    float y = wegR.top + kWegPad, cross = wegR.left + kWegPad, mid = cross + kIcon / 2;
+    if (!ClearDock()) c.Glow({left ? wegR.left + 4 : wegR.right - 4, (wegR.top + wegR.bottom) / 2}, 20, Height(wegR) / 2 + 12, Color{0, 0, 0, 0.22f}); // a soft shadow on the screen's side
+    PaintPlate(PlateR(wegR), WegRadius(), t, shadeBotNow);
+    float y = wegR.top + kWegPad + (std::max)(0.0f, (Height(wegR) - rowContent) / 2), cross = wegR.left + kWegPad, mid = cross + kIcon / 2; // longer than what's in it: centered along it
     auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) {
         D2D1_RECT_F r = TipRect(over, (std::min)(TextW(name, Weight::Medium, 12) + 20, 300.0f));
         c.Fill(r, 12, t.bg.Alpha(1).Mix(t.text, 0.08f));
@@ -552,19 +551,20 @@ void Bar::DrawWegCol(const Theme& t) { // the same dock, top to bottom: the logo
     y += (ww > 0 ? ww + kWegGap : 0) + (editing ? kIcon + kWegGap : 0);
     sep();
     float h = DrawStatus(t, y, mid, kIcon - 6, true);
+    spotStatus = Rect(cross, y, kIcon, h); // the tour points here
     if (std::fabs(h - statusW) > 0.5f) statusW = h, ui.Wake(); // the column grows or shrinks to it on the next frames
     if (input.rclick && Inside(wegR, input.mouse) && !ui.HitAt(input.mouse)) StartEdit();
 }
 
 void Bar::DrawWeg(const Theme& t) {
-    wegDrawn = {}, mediaR = {}, barsRect = {};
+    wegDrawn = {}, mediaR = {}, barsRect = {}, spotStatus = {};
     wegX.clear(), wegW.clear(), wegS.clear();
     if (sink >= 0.999f || full) return; // tucked away: nothing of it shows
     Canvas& c = ui.C();
     wegDrawn = wegR;
     if (Vert()) return DrawWegCol(t);
-    if (!Clear()) c.Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // it floats: a soft shadow under it
-    PaintPlate(wegR, WegRadius(), t, shadeBotNow);
+    if (!ClearDock()) c.Glow({(wegR.left + wegR.right) / 2, wegR.bottom - 4}, Width(wegR) / 2 + 12, 20, Color{0, 0, 0, 0.22f}); // a soft shadow under it
+    PaintPlate(PlateR(wegR), WegRadius(), t, shadeBotNow);
 
     float x = wegR.left + kWegPad, top = rowTop + kWegPad, mid = top + kIcon / 2;
     auto tip = [&](const D2D1_RECT_F& over, const std::wstring& name) { // the item's name, on a small pill above it
@@ -583,6 +583,7 @@ void Bar::DrawWeg(const Theme& t) {
     float group = kSlot + kWegSep + (ww > 0 ? ww + kWegGap : 0) + (editing ? kIcon + kWegGap : 0); // the logo, the apps and the widgets
     auto status = [&] { // the status, and show desktop at its end
         float w = DrawStatus(t, x, mid, kIcon - 6, true);
+        spotStatus = Rect(x, top, w, kIcon); // the tour points here
         if (std::fabs(w - statusW) > 0.5f) statusW = w, ui.Wake(); // the dock grows or shrinks to it on the next frames
         x += statusW;
     };

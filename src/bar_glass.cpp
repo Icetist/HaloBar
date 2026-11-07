@@ -61,7 +61,7 @@ struct Bar::Glass {
     WUC::CompositionVirtualDrawingSurface surface{nullptr}; // our frames, kept like the plain path's virtual surface
     winrt::com_ptr<abi::ICompositionDrawingSurfaceInterop> draw;
     float blurShown = -1;
-    std::array<float, 13> maskFor{}; // the outline composition holds now: the chrome's rects and the scale
+    std::array<float, 15> maskFor{}; // the outline composition holds now: the chrome's rects, the scale, a clear dock, the editor
     bool maskSet = false;
 };
 
@@ -130,9 +130,9 @@ void Bar::FreeGlass() {
 
 void Bar::SyncMask() { // the outline goes to composition only when it moved: a new clip path each frame has dwm redo the blur behind it
     if (!glass) return;
-    D2D1_RECT_F c = CardOnScreen();
-    const std::array<float, 13> want = {capL.left, capL.top, capL.right, capL.bottom, wegDrawn.left, wegDrawn.top, wegDrawn.right, wegDrawn.bottom,
-                                        c.left, c.top, c.right, c.bottom, scale}; // the radii are constants
+    D2D1_RECT_F c = CardOnScreen(), plate = PlateR(wegDrawn); // stuck, the plate runs past the edge
+    const std::array<float, 15> want = {capL.left, capL.top, capL.right, capL.bottom, plate.left, plate.top, plate.right, plate.bottom,
+                                        c.left, c.top, c.right, c.bottom, scale, ClearDock() ? 1.0f : 0.0f, Studio() ? 1.0f : 0.0f}; // the radii are constants; a clear dock and the editor's panel change what's frosted
     if (glass->maskSet && want == glass->maskFor) return;
     glass->maskFor = want;
     glass->maskSet = true;
@@ -258,14 +258,14 @@ void Bar::SampleInk() {
 }
 
 void Bar::SampleShade() { // two thin bands beside the bars, never under them: what shows there is what the glass sits over
-    if (Clear()) return SampleInk();
+    if (ClearDock()) return SampleInk(); // the clear look, or a dock of nothing but ink: black or white for it
     float top = 0, bot = 0;
     if (LookNow() == 2 && (full || sink > 0.5f)) return; // tucked or behind a game: a screen read for nobody; the next tick after it's back reads
     if (LookNow() == 2 && !AnyOpen() && !full) { // an open panel would be measured instead of the page
         auto k = [this](float l) { return TintFor(l); };
         LONG band = (LONG)std::lround(8 * scale), y = monitor.top + (LONG)std::lround(kBarH * scale), q = winPxW / 4; // thin and only the middle half: a screen read costs by its size
         if (TopOn()) top = k(Brightness({monitor.left + q, y, monitor.right - q, y + band}));
-        LONG b = monitor.bottom - (LONG)std::lround((kShelfH + 4) * scale);
+        LONG b = monitor.bottom - (LONG)std::lround((ShelfH() + 4) * scale);
         bot = k(Brightness({monitor.left + q, b - band, monitor.right - q, b}));
     } else if (LookNow() == 2) {
         return; // keep what was measured while a panel is up

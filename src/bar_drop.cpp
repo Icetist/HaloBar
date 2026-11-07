@@ -86,7 +86,7 @@ void Bar::SyncDrop() {
 
 bool Bar::ScreenRect(const D2D1_RECT_F& r, RECT& out) const { // where it shows with the dock out: tucked away it's past the screen's edge
     if (r.right <= r.left || r.bottom <= r.top) return false;
-    float lift = sink * (kWegH + kWegMargin + 4);
+    float lift = sink * (kWegH + Margin() + 4);
     D2D1_POINT_2F d = !Vert() ? D2D1_POINT_2F{0, -lift} : D2D1_POINT_2F{cfg.edge == 1 ? lift : -lift, 0};
     POINT a = ToScreen({r.left + d.x, r.top + d.y}), b = ToScreen({r.right + d.x, r.bottom + d.y});
     out = {a.x, a.y, b.x, b.y};

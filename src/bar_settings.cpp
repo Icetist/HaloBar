@@ -83,7 +83,8 @@ constexpr float kTintDot = 9; // the tint's plain choices
 constexpr float kLineH = 34, kNoteH = 14, kSegRow = 32; // a switch line, a quiet note line, a segmented control with its gap
 constexpr float kHead = 30, kFoot = 10; // Box's title band above the rows, its padding below them
 constexpr float CardH(int lines, int notes, int segs = 0) { return kHead + lines * kLineH + notes * kNoteH + segs * kSegRow + kFoot; }
-constexpr float kBarH2 = CardH(2, 1), kClockH = CardH(2, 1), kStartH = CardH(1, 1); // each card's rows, as drawn below
+constexpr float kAlertH = CardH(1, 1); // the alerts card: one switch and its note
+constexpr float kTourH = CardH(1, 0); // the tour card: its button and switch on one line
 constexpr float kAdvHeadH = 56; // the advanced section's bar, as island's
 bool advOpen = false; // folded each launch: the everyday settings come first
 float advBodyH = 0; // the unfolded cards' height, as measured last frame
@@ -96,9 +97,9 @@ constexpr float kReportH = kHead + 38 + 3 * kNoteH + kFoot; // its buttons, then
 constexpr wchar_t kIssues[] = L"https://github.com/Icetist/HaloBar/issues/new"; // never prefilled: a report only travels if the user pastes it
 constexpr double kCopiedSec = 2.5; // how long the button says what happened
 constexpr int kTextStep = 10; // percent, the text size slider
-constexpr float kPairH = (std::max)(kBarH2, kClockH); // cards side by side share the taller height
 constexpr float kColGap = 24; // between a wide card's two columns
-constexpr float kModsH = 92, kWideH = 64; // the status chips, two rows; one row of buttons across
+constexpr float kWideH = 64; // one row of buttons across
+constexpr float kMiniH = 70, kMiniDockH = 14, kCustomizeBtnH = 30; // the dock card: a strip of wallpaper with the dock on it, and its button
 constexpr float kNotch = 60; // dips per wheel notch, as island's settings
 constexpr int kPresets[] = {0x5B8CFF, 0x9B7BFF, 0xFF6FAE, 0xFF6B6B, 0xFF9F43, 0xF5C542, 0x3DDC97, 0x2EC4D6}; // island's curated accents
 
@@ -239,8 +240,8 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     if (w::IconBtn(ui, t, Ui::Id("set.close"), {area.right - 12, area.top + 10}, 28, glyph::Close, 17)) SetSettingsOpen(false);
 
     D2D1_RECT_F view = {gx, area.top + 30, area.right, area.bottom}; // what shows; the cards below it scroll into it
-    float cw = (Width(view) - 2 * kCardGap) / 3, half = (Width(view) - kCardGap) / 2;
-    float content = kTabsH + kThemeH + kInstH + kPairH + kStartH + kModsH + 2 * kWideH + kAdvHeadH + 8 * kCardGap;
+    float cw = (Width(view) - 2 * kCardGap) / 3;
+    float content = kTabsH + kThemeH + kInstH + kAlertH + kWideH + kTourH + kAdvHeadH + 6 * kCardGap; // the dock's own choices live in its editor
     float advShown = advBodyH * ui.Smooth(Ui::Id("set.adv", 2), advOpen ? 1.0f : 0, 11); // the folded section's share, as it unfolds
     content += advShown; // island's order: the instruments, then switch cards two across, then the wide ones
     float most = (std::max)(0.0f, content - Height(view));
@@ -263,24 +264,19 @@ void Bar::DrawSettings(const Theme& t, ID2D1Geometry* shape) {
     SetThemeTabs(t, Rect(grid.left, y, Width(grid), kTabsH));
     y += kTabsH + kCardGap;
     SetMaterial(t, Rect(grid.left, y, 2 * cw + kCardGap, kThemeH)); // materials need room for five swatches: two cells wide
-    SetSize(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kThemeH));
+    SetCustomize(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kThemeH)); // its size, shape, body and what's in it: in its editor
     y += kThemeH + kCardGap;
     SetPlace(t, Rect(grid.left, y, cw, kInstH)); // island's own trio: where it sits, on which screens
     SetScreens(t, Rect(grid.left + cw + kCardGap, y, cw, kInstH));
     SetRoom(t, Rect(grid.left + 2 * (cw + kCardGap), y, cw, kInstH));
     y += kInstH + kCardGap;
-    SetSong(t, Rect(grid.left, y, half, kPairH));
-    SetClock(t, Rect(grid.left + half + kCardGap, y, half, kPairH));
-    y += kPairH + kCardGap;
-    SetStart(t, Rect(grid.left, y, Width(grid), kStartH)); // the extras moved into advanced: the start card takes the row
-    y += kStartH + kCardGap;
-    SetMods(t, Rect(grid.left, y, Width(grid), kModsH));
-    y += kModsH + kCardGap;
-    SetWidgets(t, Rect(grid.left, y, Width(grid), kWideH));
-    y += kWideH + kCardGap;
+    SetAlerts(t, Rect(grid.left, y, Width(grid), kAlertH));
+    y += kAlertH + kCardGap;
     SetAdvanced(t, Rect(grid.left, y, Width(grid), kAdvHeadH)); // a bar that unfolds its cards under it, just before halobar's own buttons
     y += kAdvHeadH + kCardGap + advShown;
     SetApp(t, Rect(grid.left, y, Width(grid), kWideH));
+    y += kWideH + kCardGap;
+    SetTour(t, Rect(grid.left, y, Width(grid), kTourH)); // play it now, and whether it plays at the next start
     ui.List(false);
     rt->PopAxisAlignedClip();
     if (masked) ui.Shift({-kAway.x, -kAway.y});
@@ -536,27 +532,6 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
     if (ui.IsActive(id) && input.released) prefs::SaveNum(ownGlass ? L"GlassBlur" : L"Opacity", field); // a drag: saved once, on release; astraeus following the bar picks it up
 }
 
-void Bar::SetSize(const Theme& t, const D2D1_RECT_F& r) { // three little islands, small to large
-    Canvas& c = ui.C();
-    D2D1_RECT_F in = Box(c, t, r, L"Size");
-    static const wchar_t* const kNames[] = {L"Compact", L"Normal", L"Large"};
-    float cw = Width(in) / 3, cy = in.top + (Height(in) - 16) / 2; // centered above the 14 dip labels
-    for (int i = 0; i < 3; ++i) {
-        float pw = 26 + 7.0f * i, ph = 9 + 2.5f * i, cx = in.left + cw * (i + 0.5f); // each a bit wider and taller than the last
-        D2D1_RECT_F hit = Rect(in.left + cw * i, in.top, cw, Height(in));
-        uint32_t id = Ui::Id("set.size", i);
-        Ui::Hit h = ui.Button(id, hit);
-        float on = ui.Smooth(id + 10, cfg.size == i ? 1.0f : 0, 14);
-        D2D1_RECT_F mini = Rect(cx - pw / 2, cy - ph / 2, pw, ph);
-        if (on > 0.01f) c.Glow({cx, cy}, pw, ph * 2, t.accent.Alpha(0.25f * on));
-        c.Fill(mini, ph / 2, Color{0.02f, 0.02f, 0.03f, 0.95f}); // always the dark island, whatever the material
-        c.Stroke(mini, ph / 2, t.accent.Alpha(on).Mix(t.text.Alpha(0.4f), h.hover ? 0.6f * (1 - on) : 0), 1.2f);
-        c.Dot({mini.left + ph / 2 + 1, cy}, ph * 0.22f, t.accent);
-        c.Text(kNames[i], Rect(hit.left, in.bottom - 14, cw, 14), Weight::Medium, 10.5f, t.textDim.Mix(t.text, on), Align::Center);
-        if (h.clicked) SetPref(cfg.size, L"Size", i);
-    }
-}
-
 void Bar::SetRoom(const Theme& t, const D2D1_RECT_F& r) { // the dock: always there with its strip kept free, or out of the way under windows
     Canvas& c = ui.C();
     D2D1_RECT_F in = Box(c, t, r, L"Dock");
@@ -599,16 +574,24 @@ void Bar::SetMods(const Theme& t, const D2D1_RECT_F& r) { // a chip per status m
         c.Text(kNames[m], chip, Weight::Medium, 11.5f, t.textDim.Mix(t.onAccent, on), Align::Center);
         if (h.clicked) flip = m;
     }
-    if (flip >= 0) SetPref(cfg.mods, L"Mods", cfg.mods ^ (1 << flip));
+    if (flip >= 0) SetDock(&prefs::Settings::mods, L"Mods", cfg.mods ^ (1 << flip));
 }
 
-void Bar::SetWidgets(const Theme& t, const D2D1_RECT_F& r) { // widgets are picked on the dock itself, in its edit mode
+void Bar::SetCustomize(const Theme& t, const D2D1_RECT_F& r) { // the dock's size, shape, body, widgets, clock, start and status are made where it is, over the wallpaper
     Canvas& c = ui.C();
-    D2D1_RECT_F in = Box(c, t, r, L"Widgets");
-    size_t n = std::count_if(wgSlots.begin(), wgSlots.end(), [&](const WgSlot& w) { return w.kind != kWgApps && !Many(w.kind); }); // the apps, dividers and spaces aren't widgets
-    std::wstring line = std::to_wstring(n) + (n == 1 ? L" widget" : L" widgets") + L" in the dock  \u00b7  right click the dock to edit it any time";
-    c.Text(line, Rect(in.left, in.top, Width(in) - 170, Height(in)), Weight::Regular, 11.5f, t.textDim);
-    if (LabelButton(t, Ui::Id("set.edit"), Rect(in.right - 160, (in.top + in.bottom) / 2 - 15, 160, 30), glyph::Edit, L"Customize dock")) StartEdit();
+    D2D1_RECT_F in = Box(c, t, r, L"Dock");
+    D2D1_RECT_F wall = {in.left + 4, in.top + 2, in.right - 4, in.top + 2 + kMiniH}; // a strip of wallpaper, the dock on it
+    c.FillV(wall, 10, t.track.Alpha(0.9f), t.track.Alpha(0.45f));
+    c.Stroke(wall, 10, t.hairTop, 1);
+    float dw = Width(wall) * 0.64f, gap = cfg.dockFloat ? 6.0f : 0.0f; // floating or stuck, as it is
+    D2D1_RECT_F dock = Rect((wall.left + wall.right - dw) / 2, wall.bottom - gap - kMiniDockH, dw, kMiniDockH);
+    Color body = cfg.dockBody == prefs::Settings::kBodyAccent ? t.accent : cfg.dockBody == prefs::Settings::kBodyClear ? Color{0, 0, 0, 0} : t.bg.Alpha(1);
+    if (gap > 0) c.Fill(dock, kMiniDockH / 2, body);
+    else c.Fill({dock.left, dock.top, dock.right, wall.bottom}, kMiniDockH / 2, body); // stuck: flush with the edge
+    for (int k = -2; k <= 2; ++k) c.Dot({(dock.left + dock.right) / 2 + k * 9.0f, (dock.top + dock.bottom) / 2}, 2.2f, cfg.dockBody == prefs::Settings::kBodyAccent ? t.onAccent : t.accentHi);
+    Note(c, t, in, wall.bottom + 8, L"Its size, shape, widgets, clock");
+    Note(c, t, in, wall.bottom + 8 + kNoteH, L"and start: right-click the dock");
+    if (LabelButton(t, Ui::Id("set.edit"), Rect(in.left, in.bottom - kCustomizeBtnH, Width(in), kCustomizeBtnH), glyph::Edit, L"Customize dock")) StartEdit();
 }
 
 void Bar::SetApp(const Theme& t, const D2D1_RECT_F& r) { // halobar itself: its version and updates, and stepping aside for windows' own taskbar
@@ -824,8 +807,8 @@ void Bar::SetStart(const Theme& t, const D2D1_RECT_F& r) { // the start button: 
     bool b = false;
     Toggle(ui, t, "set.launch", Rect(right.left, right.top, Width(right), kLineH), L"Opens the launcher", cfg.launcher != 0, b); // off: the logo opens windows' own start
     Note(c, t, right, right.top + kLineH, L"Win key too. Off: Windows' own start");
-    if (f >= 0) SetPref(cfg.startIcon, L"StartIcon", f), haloLogo.Reset();
-    if (b) SetPref(cfg.launcher, L"Launcher", cfg.launcher ? 0 : 1), SyncKeyHook();
+    if (f >= 0) SetDock(&prefs::Settings::startIcon, L"StartIcon", f);
+    if (b) SetDock(&prefs::Settings::launcher, L"Launcher", cfg.launcher ? 0 : 1);
 }
 
 void Bar::SetScreens(const Theme& t, const D2D1_RECT_F& r) { // island's screens: your monitors as they stand, the dock on one or on all
@@ -886,20 +869,20 @@ void Bar::SetPlace(const Theme& t, const D2D1_RECT_F& shell) { // island's posit
     Canvas& c = ui.C();
     D2D1_RECT_F r = Box(c, t, shell, L"Position");
     struct Spot {
-        int edge, align; // align only along the bottom: center 0, left 1, right 2
+        int edge; // where along the bottom is the dock's editor's: here only the edge
         const wchar_t* name;
     };
-    static const Spot kSpots[] = {{0, 1, L"Bottom, from the left"}, {0, 0, L"Bottom, centered"}, {0, 2, L"Bottom, from the right"}, {1, 0, L"Left edge"}, {2, 0, L"Right edge"}};
+    static const Spot kSpots[] = {{0, L"Bottom edge"}, {1, L"Left edge"}, {2, L"Right edge"}};
     constexpr float kStand = 8, kCaption = 14, kRatio = 0.6f; // the monitor's stand and the line under it; a 16:10ish screen
     float mh = (std::min)(Height(r) - kStand - kCaption - 10, (Width(r) - 16) * kRatio), mw = mh / kRatio; // room left and right for the sides' hit areas
     D2D1_RECT_F scr = Rect((r.left + r.right - mw) / 2, r.top + 4, mw, mh);
     Monitor(c, t, scr);
-    int cur = cfg.edge == 1 ? 3 : cfg.edge == 2 ? 4 : cfg.align == 1 ? 0 : cfg.align == 2 ? 2 : 1;
-    float low = scr.bottom - mh * 0.34f, third = mw / 3; // the bottom's three spots below this line, the sides above it
+    int cur = cfg.edge;
+    float low = scr.bottom - mh * 0.34f; // the bottom below this line, the sides above it
     int hovered = -1, picked = -1;
-    for (int i = 0; i < 5; ++i) {
-        D2D1_RECT_F hot = i < 3 ? D2D1_RECT_F{scr.left + third * i - (i == 0 ? 8 : 0), low, scr.left + third * (i + 1) + (i == 2 ? 8 : 0), scr.bottom + 4}
-                        : i == 3 ? D2D1_RECT_F{scr.left - 8, scr.top - 4, scr.left + mw * 0.3f, low}
+    for (int i = 0; i < 3; ++i) {
+        D2D1_RECT_F hot = i == 0 ? D2D1_RECT_F{scr.left - 8, low, scr.right + 8, scr.bottom + 4}
+                        : i == 1 ? D2D1_RECT_F{scr.left - 8, scr.top - 4, scr.left + mw * 0.3f, low}
                                  : D2D1_RECT_F{scr.right - mw * 0.3f, scr.top - 4, scr.right + 8, low}; // a little past the rim: easy to hit
         uint32_t id = Ui::Id("set.place", i);
         Ui::Hit h = ui.Button(id, hot);
@@ -908,36 +891,28 @@ void Bar::SetPlace(const Theme& t, const D2D1_RECT_F& shell) { // island's posit
         if (h.clicked && i != cur) picked = i;
         Color col = t.accent.Alpha(0.25f + 0.75f * on).Mix(t.text.Alpha(0.55f), hov * (1 - on));
         float d = 3.5f + 4.5f * on + 1.5f * hov; // the lit spot stands out as a little dock
-        float len = (i < 3 ? mw * 0.28f : mh * 0.46f) + 4 * hov;
-        D2D1_RECT_F bar = i == 0 ? Rect(scr.left + 5, scr.bottom - 4 - d, len, d)
-                        : i == 1 ? Rect((scr.left + scr.right - len) / 2, scr.bottom - 4 - d, len, d)
-                        : i == 2 ? Rect(scr.right - 5 - len, scr.bottom - 4 - d, len, d)
-                        : i == 3 ? Rect(scr.left + 4, scr.top + mh * 0.40f - len / 2, d, len)
-                                 : Rect(scr.right - 4 - d, scr.top + mh * 0.40f - len / 2, d, len); // the sides' column centered a touch high: clear of the bottom's spots
-        if (i != 1 && i < 3 && on > 0.01f) c.Fill(Rect(scr.left + 5, bar.top, mw - 10, d), d / 2, t.accent.Alpha(0.22f * on)); // to one side, the dock runs the screen's width
+        float len = (i == 0 ? mw * 0.36f : mh * 0.46f) + 4 * hov;
+        D2D1_RECT_F bar = i == 0 ? Rect((scr.left + scr.right - len) / 2, scr.bottom - 4 - d, len, d)
+                        : i == 1 ? Rect(scr.left + 4, scr.top + mh * 0.40f - len / 2, d, len)
+                                 : Rect(scr.right - 4 - d, scr.top + mh * 0.40f - len / 2, d, len); // the sides' column centered a touch high: clear of the bottom
         if (on > 0.01f) c.Glow({(bar.left + bar.right) / 2, (bar.top + bar.bottom) / 2}, Width(bar) * 0.7f + 6, Height(bar) * 0.7f + 6, t.accent.Alpha(0.30f * on));
         c.Fill(bar, d / 2, col);
         for (int k = -1; k <= 1 && on > 0.5f; ++k) { // three app dots: it reads as a dock
-            D2D1_POINT_2F p = i < 3 ? D2D1_POINT_2F{(bar.left + bar.right) / 2 + k * 6.0f, (bar.top + bar.bottom) / 2} : D2D1_POINT_2F{(bar.left + bar.right) / 2, (bar.top + bar.bottom) / 2 + k * 6.0f};
+            D2D1_POINT_2F p = i == 0 ? D2D1_POINT_2F{(bar.left + bar.right) / 2 + k * 6.0f, (bar.top + bar.bottom) / 2} : D2D1_POINT_2F{(bar.left + bar.right) / 2, (bar.top + bar.bottom) / 2 + k * 6.0f};
             c.Dot(p, 1.3f, t.onAccent.Alpha((on - 0.5f) * 2));
         }
     }
     int shown = hovered >= 0 ? hovered : cur; // hovering names the spot before it's picked
     c.Text(kSpots[shown].name, Rect(r.left, r.bottom - kCaption, Width(r), kCaption), Weight::Medium, 11, hovered >= 0 && hovered != cur ? t.text : t.textDim, Align::Center);
-    if (picked < 0) return;
-    const Spot& s = kSpots[picked];
-    if (s.edge == 0 && s.align != cfg.align) SetPref(cfg.align, L"Align", s.align), rowW = 0; // jumps to its new width, no slow stretch across the screen
-    SetEdge(s.edge); // straight there, in place: windows' taskbar never shows in between
+    if (picked >= 0) SetEdge(kSpots[picked].edge); // straight there, in place: windows' taskbar never shows in between; where along the bottom is the dock's editor's
 }
 
-void Bar::SetSong(const Theme& t, const D2D1_RECT_F& r) {
+void Bar::SetAlerts(const Theme& t, const D2D1_RECT_F& r) { // the song in the dock moved to its editor, beside the other widgets
     Canvas& c = ui.C();
-    D2D1_RECT_F in = Box(c, t, r, L"Bar");
-    bool a = false, p = false;
-    Toggle(ui, t, "set.song", Rect(in.left, in.top, Width(in), kLineH), L"Song in the bar", cfg.song != 0, a);
-    Toggle(ui, t, "set.pills", Rect(in.left, in.top + kLineH, Width(in), kLineH), L"Alert pills", cfg.pills != 0, p); // off: windows' own banners
-    Note(c, t, in, in.top + 2 * kLineH, L"Pills off: Windows' own banners");
-    if (a) SetPref(cfg.song, L"Song", cfg.song ? 0 : 1);
+    D2D1_RECT_F in = Box(c, t, r, L"Alerts");
+    bool p = false;
+    Toggle(ui, t, "set.pills", Rect(in.left, in.top, Width(in), kLineH), L"Alert pills", cfg.pills != 0, p); // off: windows' own banners
+    Note(c, t, in, in.top + kLineH, L"Off: Windows' own banners");
     if (p) SetPref(cfg.pills, L"Pills", cfg.pills ? 0 : 1);
 }
 
@@ -950,8 +925,8 @@ void Bar::SetClock(const Theme& t, const D2D1_RECT_F& r) {
     Toggle(ui, t, "set.24h", Rect(in.left, in.top + kLineH, Width(in), kLineH), L"24-hour", h24, b);
     bool follow = cfg.clock24 == prefs::Settings::kFollow;
     Note(c, t, in, in.top + 2 * kLineH, follow ? L"Follows Windows until you flip it" : L"Set here, whatever Windows uses");
-    if (a) SetPref(cfg.date, L"Date", cfg.date ? 0 : 1);
-    if (b) SetPref(cfg.clock24, L"Clock24", h24 ? 0 : 1); // the first flip leaves "follow" for an explicit choice
+    if (a) SetDock(&prefs::Settings::date, L"Date", cfg.date ? 0 : 1);
+    if (b) SetDock(&prefs::Settings::clock24, L"Clock24", h24 ? 0 : 1); // the first flip leaves "follow" for an explicit choice
 }
 
 void Bar::BeginHex(int which, int hex) {

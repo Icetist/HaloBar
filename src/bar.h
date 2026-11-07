@@ -129,7 +129,6 @@ public:
     static constexpr float kWegSep = kWegGap + 20, kMediaTileW = 176; // a separator's slot, room either side of its hairline; the song's wide spot
     static constexpr float kWegZoom = 1.0f, kWegReach = 2.6f; // no magnification unless raised here
     static constexpr float kWegH = kIcon + 2 * kWegPad;
-    static constexpr float kShelfH = kWegH + 2 * kWegMargin; // the dock with its margins: the strip kept free when it doesn't auto-hide
     static constexpr float kSlot = kIcon + kWegGap, kSlotMin = 30;
     static constexpr float kAppSlot = kIcon + 14; // an app's spot: wider than the rest, so the icons breathe
     static constexpr float kRowH = kWegH; // the dock's row, for the code that rests on it
@@ -144,6 +143,7 @@ public:
     static constexpr float kSetRise = 470, kSetW = 760; // and into its settings
     static constexpr float kWgW = 420, kGalleryW = 660; // and into a widget's panel, or edit mode's gallery
     static constexpr float kSheetW = 380; // and into an app's sheet
+    static constexpr float kStudioRadius = 26; // the dock's editor, its panel's corners
     static constexpr float kLaunchW = 800; // and into the apps menu
     static constexpr float kQsW = 460, kCalW = 720, kNotifW = 360; // and into quick settings, or the clock: notifications beside the calendar
     static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32, kClipPasteTimer = 33, kClipSaveTimer = 34, kThemeTimer = 35, kFaceTimer = 97;
@@ -231,7 +231,7 @@ private:
     bool EnsureDev();
     void FreeDev();
     void Retry(); // the device or a draw failed: try again shortly, give the taskbar back if it keeps failing
-    UINT IconPx() const { return (UINT)(std::max)(16L, std::lround(kAppIcon * scale)); } // the size on the dock's tiles, in pixels: drawn 1:1 there, so it stays sharp
+    UINT IconPx() const { return (UINT)(std::max)(16L, std::lround(kAppIcon * (iconScale > 0 ? iconScale : scale))); } // the size on the dock's tiles, in pixels: drawn 1:1 there, so it stays sharp; held while a resize is dragged, so icons aren't read again every frame
     void Redraw();
     void Arm(double seconds);
     bool Caret(); // a text field's blinking caret: shown now or not, with a frame booked for its next flip
@@ -260,8 +260,7 @@ private:
     bool OwnOpacity() const { return cfg.look != prefs::Settings::kFollow || !islandHere; } // following island: its opacity, as its look
     float Opacity() const { return (OwnOpacity() ? cfg.opacity : look.bgOpacity) / 100.0f; }
     Color Body(const Theme& t) const { return t.glass || theme::Contrast() || Clear() ? t.bg : t.bg.Alpha(Opacity()); } // the material's body: the solid looks let the desktop through, glass is the blur's
-    static constexpr float kZoomMax = 1.12f; // large: the surface is made this tall, so a size change never rebuilds it
-    float Zoom() const { float base = cfg.size == 0 ? 0.9f : cfg.size == 2 ? kZoomMax : 1.0f; return base * TextZoom(base); }
+    float Zoom() const { float base = (zoomLive > 0 ? zoomLive : cfg.zoom) / 100.0f; return base * TextZoom(base); } // its size, live while its edge is dragged
     float TextZoom(float base) const; // the text size on top of the size setting, as far as settings still fit this screen
     int TextPct() const; // the larger of the size picked here and windows'
     bool HighContrast() const;
@@ -603,10 +602,8 @@ private:
     void HexChar(wchar_t ch);
     std::wstring ClipNow() const; // the clipboard's text
     int wheelPick = 0; // the handle being edited: 0 accent, 1 background
-    void SetSize(const Theme& t, const D2D1_RECT_F& r);
     void SetRoom(const Theme& t, const D2D1_RECT_F& r);
     void SetMods(const Theme& t, const D2D1_RECT_F& r); // which status modules the dock shows
-    void SetWidgets(const Theme& t, const D2D1_RECT_F& r); // the way into the dock's edit mode
     void SetApp(const Theme& t, const D2D1_RECT_F& r); // updates, and handing the taskbar back to windows
     void SetAdvanced(const Theme& t, const D2D1_RECT_F& r); // options most never need
     void SetStart(const Theme& t, const D2D1_RECT_F& r); // the start button's face
@@ -614,8 +611,62 @@ private:
     void SetPlace(const Theme& t, const D2D1_RECT_F& r); // a little monitor: tap where the dock goes, an edge or a spot along the bottom
     float setScroll = 0; // how far the settings sheet is scrolled, eased toward
     bool slideHot = false; // the mouse sat on a slider last frame: the wheel steps it rather than scrolling the sheet
-    void SetSong(const Theme& t, const D2D1_RECT_F& r);
+    void SetAlerts(const Theme& t, const D2D1_RECT_F& r); // alert pills: the dock's own choices moved to its editor
     void SetClock(const Theme& t, const D2D1_RECT_F& r);
+    void SetCustomize(const Theme& t, const D2D1_RECT_F& r); // the way into the dock's editor
+
+    // bar_studio.cpp: the dock's editor over the wallpaper, as astraeus' long pill's; a right click on the dock opens it
+    float studioK = 0; // its fade: the dim over the screen, and the panel
+    int studioTab = 0, studioTabNth = 0; // 0 the dock, 1 its widgets, 2 the clock and the start button; each page fades in afresh
+    bool Studio() const { return studioK > 0.001f; } // its frames are one pass over the whole screen
+    D2D1_RECT_F StudioRect() const; // the panel, clear of the dock
+    void DrawStudio(const Theme& t, const Theme& dock, const Theme* ink); // the dim, the dock as it is, the panel over the wallpaper
+    void StudioPanel(const Theme& t, const D2D1_RECT_F& r);
+    void StudioDock(const Theme& t, const D2D1_RECT_F& r); // its shape, body, size and status
+    void StudioClock(const Theme& t, const D2D1_RECT_F& r); // the clock and the start button
+    void StudioSize(const Theme& t, const D2D1_RECT_F& r); // its size and length as they are, and a way back to compact and to fitting
+    bool StudioHistory(const Theme& t, D2D1_POINT_2F at); // undo and redo; true when one acted
+    void SetDock(int prefs::Settings::*field, const wchar_t* name, int value); // an editor choice, in every dock
+    std::vector<int> StudioSnap() const; // the editor's choices and the widgets, as numbers
+    void StudioLoad(const std::vector<int>& s);
+    std::vector<int> StudioDefaults() const;
+    std::vector<std::vector<int>> studioBack, studioAhead; // undo and redo
+    std::vector<int> studioNow;
+    bool ClearDock() const { return cfg.dockBody == prefs::Settings::kBodyClear || (cfg.dockBody == prefs::Settings::kBodyTheme && Clear()); } // nothing but ink: its own pick, or the clear look's
+    bool AccentDock() const { return cfg.dockBody == prefs::Settings::kBodyAccent; }
+    float Margin() const { return cfg.dockFloat ? kWegMargin : 0; } // off the screen's edge, or stuck to it
+    float ShelfH() const { return kWegH + 2 * Margin(); } // the dock with its margins: the strip kept free when it doesn't auto-hide
+    D2D1_RECT_F PlateR(const D2D1_RECT_F& r) const; // its plate: stuck, it runs past the screen's edge, so only the far corners round
+    Theme DockTheme(const Theme& t) const; // the accent's body, and the ink that reads on it
+    enum Grip { kGripNone, kGripSize, kGripStart, kGripEnd }; // the editor's handles on the dock: its inner edge sizes it, its ends set its length
+    int studioGrip = kGripNone; // the one held
+    POINT gripFrom{}; // where it was taken, in screen pixels: the dips change under a resize
+    float gripZoom = 0, gripLen = 0; // the size and the length as it was taken
+    int zoomLive = 0, lenLive = -1; // what's being dragged to, before it's let go and kept; 0 and -1: none
+    float iconScale = 0; // the icons' scale while a resize is dragged
+    LPCWSTR cursorNow = nullptr; // a handle under the mouse: its arrows, else the hand or the arrow
+    void StudioGrips(); // the handles: pressed and dragged before the dock's own controls, drawn over it
+    D2D1_RECT_F GripRect(int g) const;
+    bool Fixed() const { return !Vert() && (cfg.align || (cfg.adaptive && maxHere && !AutoHide())); } // the dock runs the screen's width: no length of its own
+    int LenNow() const { return lenLive >= 0 ? lenLive : cfg.dockLen; }
+    float fitLen = 0; // how long it is when it fits what's in it: a dragged end snaps back to it
+    void Rescale(); // a new size while it's dragged: everything measured again in the same window; the strip follows once it's let go
+
+    // bar_tour.cpp: a few steps over the dock on the first start, a soft light on each part and a card saying what it does
+    static constexpr UINT_PTR kTourTimer = 40;
+    static constexpr UINT kTourDelayMs = 2500; // once the dock has settled in after the start
+    int tourStep = -1, tourNth = 0, tourRun = 0; // the step showing, -1 none; each step and each run fades in afresh
+    bool tourAgain = false; // the last card's switch: the tour comes again at the next start
+    int tourNext = -1; // settings' switch for it, read once: -1 not yet
+    float tourK = 0; // its fade: the dim and the card
+    D2D1_RECT_F spotApps{}, spotWidgets{}, spotStatus{}; // where the dock last drew its apps, its widgets and its status: the tour's light falls there
+    bool FullPass() const { return Studio() || tourK > 0.001f; } // the editor or the tour: one pass over the whole screen
+    bool TourShows(int i) const; // that step has what it shows in this dock
+    void TourGo(int from, int dir); // to the next step this dock has, that way
+    void TourStart();
+    void TourEnd(); // done: the last card's switch says whether it comes at the next start
+    void DrawTour(const Theme& t);
+    void SetTour(const Theme& t, const D2D1_RECT_F& r); // settings: play it now, and whether it plays at the next start
 
     // bar_glass.cpp: the glass look, the island over a live blur of what's behind it
     struct Glass;
