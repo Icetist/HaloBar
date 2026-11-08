@@ -243,6 +243,12 @@ private:
     int setNow = 0, setTab = -1; // the theme in the live fields: 0 the desktop's, 1 over apps; the one settings is editing, -1 whichever applies
     void SyncThemeSet(); // the theme that should be live now
     void SyncAppHere(); // is a window maximized on this screen: asked of windows itself, the app list lags a new window
+    bool NeedsAppHere() const { return cfg.appsTheme || cfg.wgSplit || cfg.dockBodyApps != prefs::Settings::kBodySame; } // only then are the windows walked
+    int studioCtx = 0; // which the editor is shaping: 0 on the desktop, 1 over apps
+    bool CtxApps() const { return editing ? studioCtx == 1 : appHere; } // the context the dock shows now
+    int BodyNow() const { return CtxApps() && cfg.dockBodyApps != prefs::Settings::kBodySame ? cfg.dockBodyApps : cfg.dockBody; }
+    int bodyShown = -1; // the body last styled for: a context change restyles only when it differs
+    void SyncCtx(); // the widget set and the body for the context now
     bool Frosted() const { return LookNow() == 2 || (Clear() && !glassFailed); } // the blur's tree is up: glass, or clear's panels
     int TintNow() const { return Clear() ? (wallLight ? 0xFFFFFF : -1) : cfg.look == prefs::Settings::kFollow ? look.glassTint : cfg.glassTint; } // clear's panels take the wallpaper's side; following astraeus, its tint
     bool DarkInk() const { return Frosted() && theme::TintIsPale(TintNow()); } // glass, turned over by a pale tint
@@ -419,7 +425,13 @@ private:
     struct WgSlot {
         int kind = 0, size = 1; // size: 0 small, 1 medium, 2 large
     };
-    std::vector<WgSlot> wgSlots; // in dock order
+    std::vector<WgSlot> wgSlots; // in dock order: the set shown now
+    std::vector<WgSlot> wgSlotsOther; // the other context's set, swapped in as the context changes; with no split, the over-apps one waiting
+    bool slotsApps = false; // wgSlots holds the over-apps set
+    const std::vector<WgSlot>& DeskSlots() const { return slotsApps ? wgSlotsOther : wgSlots; }
+    const std::vector<WgSlot>& AppsSlots() const { return slotsApps ? wgSlots : wgSlotsOther; }
+    void SaveSet(bool apps) const; // one set to its key, nothing else
+    void SyncSlotSet(); // the set for the context now in wgSlots
     float fitW[kWgCount] = {}; // net, battery and weather: as wide as their words, measured as the numbers change; 0 until first measured
     double fitLow[kWgCount] = {}; // since when a shorter text has wanted less room
     void SyncFit(); // grows a fitted widget at once, shrinks it only once a shorter text has held a while
@@ -632,8 +644,8 @@ private:
     std::vector<int> StudioDefaults() const;
     std::vector<std::vector<int>> studioBack, studioAhead; // undo and redo
     std::vector<int> studioNow;
-    bool ClearDock() const { return cfg.dockBody == prefs::Settings::kBodyClear || (cfg.dockBody == prefs::Settings::kBodyTheme && Clear()); } // nothing but ink: its own pick, or the clear look's
-    bool AccentDock() const { return cfg.dockBody == prefs::Settings::kBodyAccent; }
+    bool ClearDock() const { return BodyNow() == prefs::Settings::kBodyClear || (BodyNow() == prefs::Settings::kBodyTheme && Clear()); } // nothing but ink: its own pick, or the clear look's
+    bool AccentDock() const { return BodyNow() == prefs::Settings::kBodyAccent; }
     float Margin() const { return cfg.dockFloat ? kWegMargin : 0; } // off the screen's edge, or stuck to it
     float ShelfH() const { return kWegH + 2 * Margin(); } // the dock with its margins: the strip kept free when it doesn't auto-hide
     D2D1_RECT_F PlateR(const D2D1_RECT_F& r) const; // its plate: stuck, it runs past the screen's edge, so only the far corners round

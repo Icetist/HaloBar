@@ -118,6 +118,8 @@ Settings Load() {
     s.date = num(L"Date", s.date, 0, 1);
     s.dockFloat = num(L"DockFloat", s.dockFloat, 0, 1);
     s.dockBody = num(L"DockBody", s.dockBody, Settings::kBodyTheme, Settings::kBodyClear);
+    s.dockBodyApps = num(L"DockBodyApps", s.dockBodyApps, Settings::kBodySame, Settings::kBodyClear);
+    s.wgSplit = num(L"WidgetSplit", s.wgSplit, 0, 1);
     s.dockLen = num(L"DockLen", s.dockLen, Settings::kLenFit, Settings::kLenMax);
     s.a11yContrast = num(L"A11yContrast", s.a11yContrast, Settings::kContrastAuto, Settings::kContrastOff);
     s.a11yFollow = num(L"A11yFollowText", s.a11yFollow, 0, 1);

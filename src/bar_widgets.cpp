@@ -152,17 +152,21 @@ bool Bar::HasWg(int w) const {
 constexpr float kGrip = 5; // half the space widget's edge handle, either side of its edge
 
 void Bar::LoadSlots() {
+    slotsApps = false;
     wgSlots.clear();
     std::wstring s = sys::ReadText(L"WidgetLayout"); // "kind:size,kind:size": the dock's order
-    for (size_t i = 0; i < s.size();) {
-        size_t e = s.find(L',', i);
-        std::wstring part = s.substr(i, e == std::wstring::npos ? std::wstring::npos : e - i);
-        int k = -1, z = 1;
-        if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgFaces + faces::Count() && k != kWgRetired && (Many(k) || !HasWg(k)))
-            wgSlots.push_back({k, k == kWgSpace ? (std::clamp)(z, (int)kSpaceMin, (int)kSpaceMax) : (std::clamp)(z, 0, 2)}); // a space keeps its width
-        if (e == std::wstring::npos) break;
-        i = e + 1;
-    }
+    auto parse = [&](const std::wstring& text) { // into wgSlots, as it's checked against for repeats
+        for (size_t i = 0; i < text.size();) {
+            size_t e = text.find(L',', i);
+            std::wstring part = text.substr(i, e == std::wstring::npos ? std::wstring::npos : e - i);
+            int k = -1, z = 1;
+            if (swscanf_s(part.c_str(), L"%d:%d", &k, &z) == 2 && k >= 0 && k < kWgFaces + faces::Count() && k != kWgRetired && (Many(k) || !HasWg(k)))
+                wgSlots.push_back({k, k == kWgSpace ? (std::clamp)(z, (int)kSpaceMin, (int)kSpaceMax) : (std::clamp)(z, 0, 2)}); // a space keeps its width
+            if (e == std::wstring::npos) break;
+            i = e + 1;
+        }
+    };
+    parse(s);
     if (s.empty()) { // first run on this version: the song, the old widgets as they were picked, the bin
         wgSlots.push_back({kWgMedia, 1});
         for (int old = 0; old < 10; ++old)
@@ -174,16 +178,40 @@ void Bar::LoadSlots() {
         wgSlots.insert(wgSlots.begin(), {kWgApps, 0});
         if (more) wgSlots.insert(wgSlots.begin() + 1, {kWgDivider, 0}); // where the fixed separator was
     }
+    std::wstring apps = sys::ReadText(L"WidgetLayoutApps"); // the over-apps set: never made, it starts as the desktop's
+    std::vector<WgSlot> desk = wgSlots;
+    if (!apps.empty()) {
+        wgSlots.clear();
+        parse(apps);
+        wgSlotsOther = std::move(wgSlots);
+    } else {
+        wgSlotsOther = desk;
+    }
+    wgSlots = std::move(desk);
     focusMin = (std::clamp)(prefs::ReadNum(L"WgFocusMin", 25), 1, duration::kMaxSec / 60); // any length since it can be typed
     waterGoal = (std::clamp)(prefs::ReadNum(L"WgWaterGoal", 8), 1, 30);
     fahrenheit = prefs::ReadNum(L"WgFahrenheit", 0) != 0;
     folderPick = (std::clamp)(prefs::ReadNum(L"WgFolder", 0), 0, 4);
 }
 
-void Bar::SaveSlots() {
+void Bar::SaveSet(bool apps) const {
     std::wstring s;
-    for (const WgSlot& w : wgSlots) s += (s.empty() ? L"" : L",") + std::to_wstring(w.kind) + L":" + std::to_wstring(w.size);
-    sys::SaveText(L"WidgetLayout", s);
+    for (const WgSlot& w : apps ? AppsSlots() : DeskSlots()) s += (s.empty() ? L"" : L",") + std::to_wstring(w.kind) + L":" + std::to_wstring(w.size);
+    sys::SaveText(apps ? L"WidgetLayoutApps" : L"WidgetLayout", s);
+}
+
+void Bar::SaveSlots() {
+    SaveSet(slotsApps); // the set being shown is the one edited
+    SyncWidgets();
+    Redraw();
+}
+
+void Bar::SyncSlotSet() {
+    bool want = cfg.wgSplit && CtxApps();
+    if (want == slotsApps) return;
+    std::swap(wgSlots, wgSlotsOther);
+    slotsApps = want;
+    wgSel = dragSlot = -1; // a pick in one set means nothing in the other
     SyncWidgets();
     Redraw();
 }
@@ -524,6 +552,8 @@ void Bar::StartEdit() { // the dock's editor, over the wallpaper: the dock stays
     Anchor(W / 2, false);
     SetPanel(Panel::Widget);
     editing = true;
+    studioCtx = 0; // the desktop's, as it's shown over the wallpaper
+    SyncCtx();
     studioTab = 0, ++studioTabNth; // it opens on the dock itself
     studioBack.clear(), studioAhead.clear();
     studioNow = StudioSnap(); // undo starts here

@@ -52,6 +52,9 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int dockFloat = 1; // 1 the dock floats off the screen's edge, 0 it's stuck to it
     enum { kBodyTheme, kBodyAccent, kBodyClear };
     int dockBody = kBodyTheme; // the dock's body: the look's material, the accent, or nothing but its ink
+    static constexpr int kBodySame = -1;
+    int dockBodyApps = kBodySame; // its body while a window is maximized on its screen; kBodySame keeps the desktop's
+    int wgSplit = 0; // 1 the dock keeps a widget set of its own while a window is maximized on its screen
     static constexpr int kLenFit = 0, kLenMax = 1000;
     int dockLen = kLenFit; // its length in thousandths of the screen's, its ends dragged in its editor; 0 fits what's in it
     int clock24 = kFollow; // kFollow = the system's clock format, 0 12-hour, 1 24-hour

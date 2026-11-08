@@ -16,6 +16,7 @@ constexpr float kPanelW = 780, kPanelH = 476, kEdge = 24, kToDock = 40, kRise = 
 constexpr float kPad = 18, kHeadH = 32, kTabsH = 30, kTabsW = 390, kGap = 12; // its header, then the page picker
 constexpr float kDoneW = 84, kResetW = 76, kHistBtn = 30, kHistGap = 6, kHistIcon = 20; // the header's buttons
 constexpr float kCardGap = 10;
+constexpr float kCtxW = 230; // the desktop / over apps switch, across from the page picker
 constexpr float kLookH = 196, kModsH = 92; // the dock page: its look and size, then the status chips
 constexpr float kGripOff = 9, kGripLong = 48, kGripHit = 18, kGripBar = 34, kGripThin = 5; // the dock's handles: off its edge, their hit area and the bar drawn in it
 constexpr float kRowGap = 8; // between the look card's choices
@@ -23,7 +24,8 @@ constexpr float kLenSnap = 14; // a dragged end this near the dock's fitting len
 constexpr float kClockH = 122, kStartH = 88; // the clock's two switches and its note; the start button's row and note
 constexpr float kLabelH = 16, kSegH = 28, kMiniGap = 6, kMiniDockH = 14; // the look card: a label over each choice, a strip of wallpaper with the dock on it
 constexpr size_t kDepth = 64; // undo steps kept
-constexpr size_t kHeadN = 11; // a snapshot: the choices below, then each widget's kind and size
+constexpr size_t kHeadN = 13; // a snapshot: the choices below, then each widget's kind and size
+constexpr int kSetMark = -1; // in a snapshot: between the desktop's widgets and the over-apps ones; no kind is negative
 
 // material symbols' undo and redo, outlined, weight 400 (apache 2.0, as the bundled icon font): the subset font never held them
 constexpr const char* kUndoPath = "M280-200v-80h284q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l104 104-56 56-200-200 200-200 56 56-104 104h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H280Z";
@@ -212,18 +214,22 @@ void Bar::SetDock(int prefs::Settings::*field, const wchar_t* name, int value) {
         b->Redraw();
     }
     if (field == &prefs::Settings::launcher) SyncKeyHook(); // the win key opens the launcher or windows' start
+    if (field == &prefs::Settings::wgSplit || field == &prefs::Settings::dockBodyApps)
+        for (Bar* b : Docks()) b->SyncAppHere(), b->SyncCtx(); // the windows watched for it, or let go; the set and the body for where it is
 }
 
 std::vector<int> Bar::StudioSnap() const {
-    std::vector<int> s = {cfg.dockFloat, cfg.dockBody, cfg.zoom, cfg.dockLen, cfg.align, cfg.song, cfg.date, cfg.clock24, cfg.startIcon, cfg.launcher, cfg.mods};
-    s.reserve(kHeadN + 2 * wgSlots.size());
-    for (const WgSlot& w : wgSlots) s.push_back(w.kind), s.push_back(w.size);
+    std::vector<int> s = {cfg.dockFloat, cfg.dockBody, cfg.zoom, cfg.dockLen, cfg.align, cfg.song, cfg.date, cfg.clock24, cfg.startIcon, cfg.launcher, cfg.mods, cfg.dockBodyApps, cfg.wgSplit};
+    for (const WgSlot& w : DeskSlots()) s.push_back(w.kind), s.push_back(w.size);
+    if (!cfg.wgSplit) return s; // one set: the other means nothing yet
+    s.push_back(kSetMark);
+    for (const WgSlot& w : AppsSlots()) s.push_back(w.kind), s.push_back(w.size);
     return s;
 }
 
 std::vector<int> Bar::StudioDefaults() const { // as a first run has it: the choices' defaults, the apps, the song, the first widgets, the bin
     prefs::Settings d;
-    std::vector<int> s = {d.dockFloat, d.dockBody, d.zoom, d.dockLen, d.align, d.song, d.date, d.clock24, d.startIcon, d.launcher, d.mods};
+    std::vector<int> s = {d.dockFloat, d.dockBody, d.zoom, d.dockLen, d.align, d.song, d.date, d.clock24, d.startIcon, d.launcher, d.mods, d.dockBodyApps, d.wgSplit};
     auto slot = [&](int kind, int size) { s.push_back(kind), s.push_back(size); };
     slot(kWgApps, 0);
     slot(kWgDivider, 0);
@@ -243,16 +249,26 @@ void Bar::StudioLoad(const std::vector<int>& s) {
     };
     static const Choice kChoices[kHeadN] = {{&prefs::Settings::dockFloat, L"DockFloat"}, {&prefs::Settings::dockBody, L"DockBody"}, {&prefs::Settings::zoom, L"Zoom"},
                                             {&prefs::Settings::dockLen, L"DockLen"}, {&prefs::Settings::align, L"Align"}, {&prefs::Settings::song, L"Song"}, {&prefs::Settings::date, L"Date"}, {&prefs::Settings::clock24, L"Clock24"},
-                                            {&prefs::Settings::startIcon, L"StartIcon"}, {&prefs::Settings::launcher, L"Launcher"}, {&prefs::Settings::mods, L"Mods"}};
+                                            {&prefs::Settings::startIcon, L"StartIcon"}, {&prefs::Settings::launcher, L"Launcher"}, {&prefs::Settings::mods, L"Mods"},
+                                            {&prefs::Settings::dockBodyApps, L"DockBodyApps"}, {&prefs::Settings::wgSplit, L"WidgetSplit"}};
     for (size_t i = 0; i < kHeadN; ++i) SetDock(kChoices[i].field, kChoices[i].name, s[i]); // only what differs is written
-    std::vector<WgSlot> slots;
-    for (size_t i = kHeadN; i + 1 < s.size(); i += 2) slots.push_back({s[i], s[i + 1]});
-    bool same = slots.size() == wgSlots.size();
-    for (size_t i = 0; same && i < slots.size(); ++i) same = slots[i].kind == wgSlots[i].kind && slots[i].size == wgSlots[i].size;
-    if (same) return;
-    wgSlots = std::move(slots);
+    std::vector<WgSlot> desk, apps;
+    size_t i = kHeadN;
+    for (; i + 1 < s.size() && s[i] != kSetMark; i += 2) desk.push_back({s[i], s[i + 1]});
+    bool both = i < s.size() && s[i] == kSetMark;
+    for (++i; both && i + 1 < s.size(); i += 2) apps.push_back({s[i], s[i + 1]});
+    auto same = [](const std::vector<WgSlot>& a, const std::vector<WgSlot>& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const WgSlot& x, const WgSlot& y) { return x.kind == y.kind && x.size == y.size; });
+    };
+    bool deskSame = same(desk, DeskSlots()), appsSame = !both || same(apps, AppsSlots());
+    if (deskSame && appsSame) return;
+    (slotsApps ? wgSlotsOther : wgSlots) = std::move(desk);
+    if (both) (slotsApps ? wgSlots : wgSlotsOther) = std::move(apps);
     wgSel = dragSlot = -1;
-    SaveSlots();
+    if (!deskSame) SaveSet(false);
+    if (!appsSame) SaveSet(true);
+    SyncWidgets();
+    Redraw();
 }
 
 bool Bar::StudioHistory(const Theme& t, D2D1_POINT_2F at) { // two round chips, the arrows in the accent; greyed with nothing to step to
@@ -367,6 +383,12 @@ void Bar::StudioPanel(const Theme& t, const D2D1_RECT_F& r) {
     static const wchar_t* const kTabs[] = {L"Dock", L"Widgets", L"Clock and start"};
     int picked = Segmented(ui, t, "st.tabs", Rect(in.left, y, (std::min)(kTabsW, Width(in)), kTabsH), kTabs, 3, studioTab);
     if (picked >= 0) studioTab = picked, ++studioTabNth;
+    if (studioTab != 2) { // the body and the widgets can differ over apps: which of the two this edits, the dock showing it
+        static const wchar_t* const kCtx[] = {L"On desktop", L"Over apps"};
+        float cw = (std::min)(kCtxW, Width(in) - kTabsW - kGap);
+        int ctx = Segmented(ui, t, "st.ctx", Rect(in.right - cw, y, cw, kTabsH), kCtx, 2, studioCtx);
+        if (ctx >= 0 && ctx != studioCtx) studioCtx = ctx, ++studioTabNth, SyncCtx();
+    }
     y += kTabsH + kGap + 4;
     D2D1_RECT_F body = {in.left, y, in.right, in.bottom};
     float show = ui.SmoothFrom(Ui::Id("st.page", studioTabNth), 1, 0, 16); // each page fades in afresh
@@ -398,15 +420,17 @@ void Bar::StudioDock(const Theme& t, const D2D1_RECT_F& body) {
     for (int k = -3; k <= 3; ++k) c.Dot({(dock.left + dock.right) / 2 + k * 10.0f, (dock.top + dock.bottom) / 2}, 2.3f, dot);
     c.PopClip();
     static const wchar_t* const kBodyNotes[] = {L"The look picked in Settings", L"Your accent color", L"Only its icons, black or white"};
-    Note(c, t, wall, in.bottom - kNoteLine, kBodyNotes[cfg.dockBody]);
+    bool apps = studioCtx == 1, same = apps && cfg.dockBodyApps == prefs::Settings::kBodySame;
+    Note(c, t, wall, in.bottom - kNoteLine, same ? L"The same as on the desktop" : kBodyNotes[BodyNow()]);
     float x = wall.right + 18, w = in.right - x, y = in.top;
     c.Text(L"Shape", Rect(x, y, w, kLabelH), Weight::Medium, 11, t.textDim);
     static const wchar_t* const kShapes[] = {L"Floating", L"Stuck"};
     int shape = Segmented(ui, t, "st.shape", Rect(x, y + kLabelH + 2, w, kSegH), kShapes, 2, cfg.dockFloat ? 0 : 1);
     y += kLabelH + 2 + kSegH + kRowGap;
     c.Text(L"Body", Rect(x, y, w, kLabelH), Weight::Medium, 11, t.textDim);
-    static const wchar_t* const kBodies[] = {L"Theme", L"Accent", L"Clear"};
-    int bodyPick = Segmented(ui, t, "st.body", Rect(x, y + kLabelH + 2, w, kSegH), kBodies, 3, cfg.dockBody);
+    static const wchar_t* const kBodies[] = {L"Theme", L"Accent", L"Clear"}, *const kBodiesApps[] = {L"Same", L"Theme", L"Accent", L"Clear"};
+    int bodyPick = apps ? Segmented(ui, t, "st.body.apps", Rect(x, y + kLabelH + 2, w, kSegH), kBodiesApps, 4, cfg.dockBodyApps + 1) // same: the desktop's, whatever that is
+                        : Segmented(ui, t, "st.body", Rect(x, y + kLabelH + 2, w, kSegH), kBodies, 3, cfg.dockBody);
     y += kLabelH + 2 + kSegH + kRowGap;
     c.Text(L"Position", Rect(x, y, w, kLabelH), Weight::Medium, 11, t.textDim);
     int place = -1;
@@ -419,7 +443,8 @@ void Bar::StudioDock(const Theme& t, const D2D1_RECT_F& body) {
         if (picked >= 0) place = kAlignOf[picked];
     }
     if (shape >= 0) SetDock(&prefs::Settings::dockFloat, L"DockFloat", shape == 0 ? 1 : 0);
-    if (bodyPick >= 0) SetDock(&prefs::Settings::dockBody, L"DockBody", bodyPick);
+    if (bodyPick >= 0 && apps) SetDock(&prefs::Settings::dockBodyApps, L"DockBodyApps", bodyPick - 1);
+    else if (bodyPick >= 0) SetDock(&prefs::Settings::dockBody, L"DockBody", bodyPick);
     if (place >= 0) SetDock(&prefs::Settings::align, L"Align", place);
     StudioSize(t, Rect(look.right + kCardGap, body.top, cw, kLookH));
     SetMods(t, Rect(body.left, body.top + kLookH + kCardGap, Width(body), kModsH)); // what sits at its end

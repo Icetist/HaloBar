@@ -665,7 +665,7 @@ void Bar::SyncAppHere() {
     constexpr UINT kRecheckMs = 2000; // a window can open or close with no event worth trusting
     bool was = appHere;
     appHere = false;
-    if (cfg.appsTheme) { // only with the option on: nothing walks the windows for it otherwise
+    if (NeedsAppHere()) { // only with an over-apps option on: nothing walks the windows for it otherwise
         struct Ctx { HMONITOR mon; DWORD self; bool found; } c{mon, GetCurrentProcessId(), false};
         EnumWindows([](HWND w, LPARAM lp) -> BOOL {
             auto* c = reinterpret_cast<Ctx*>(lp);
@@ -684,7 +684,19 @@ void Bar::SyncAppHere() {
     } else {
         KillTimer(hwnd, kThemeTimer);
     }
-    if (appHere != was) SyncThemeSet();
+    if (appHere != was) SyncThemeSet(), SyncCtx();
+}
+
+void Bar::SyncCtx() {
+    SyncSlotSet();
+    int body = BodyNow();
+    if (body == bodyShown) return;
+    bool first = bodyShown < 0; // the first frame styles itself
+    bodyShown = body;
+    if (first) return;
+    SampleShade(); // a clear dock reads its ink off the wallpaper
+    PostMessageW(hwnd, WM_APP_RESTYLE, 0, 0); // never mid-frame
+    Redraw();
 }
 
 void Bar::SyncThemeSet() {
@@ -912,6 +924,7 @@ void Bar::SetPanel(Panel p) {
     wgOpen = p == Panel::Widget;
     wgShown = wgOpen ? wgKind : -1;
     if (!wgOpen || wgKind != kWgGallery) editing = false, dragSlot = -1; // edit mode lasts as long as its gallery
+    SyncCtx(); // the editor shows the context it picked; closed, the dock goes back to where it is
     if (shownWas == kWgNotes && wgShown != kWgNotes && noteLoaded) SaveNote(); // the note is written as it closes
     if (noteWas && !Typing()) draft.clear();
     if (shownWas == kWgClip && wgShown != kWgClip) ClipClosed();

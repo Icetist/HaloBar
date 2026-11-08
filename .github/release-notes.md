@@ -1,14 +1,12 @@
-## HaloBar 0.0.11
+## HaloBar 0.0.12
 
 ### New
-- **Customize the dock where it is.** Right-click the dock and the screen dims around it, with a panel above it for everything about the dock: its shape, body, position, status icons, widgets, clock and start button, with undo, redo and reset. The dock itself stays live to move and remove widgets.
-- **Floating or stuck.** The dock can float off the screen's edge, as before, or sit flush against it.
-- **Theme, accent or clear body.** Give the dock your look's material, your accent color, or nothing but its icons, which turn black or white to suit the wallpaper.
-- **Any size and length.** Drag the dock's top edge to resize it and its ends to make it longer or shorter. New docks start compact.
-- **A short tour** of the dock the first time HaloBar starts. Play it again from **Tour** at the bottom of Settings.
+- **A different dock over your apps.** The dock's editor has an **On desktop / Over apps** switch on its Dock and Widgets tabs, so you can set up the dock for when a window covers the desktop.
+- **Its own body over apps.** Over apps the dock can keep the same body as on the desktop, or wear the theme, your accent color, or go clear.
+- **Own widgets over apps.** Turn on **Own widgets over apps** on the Widgets tab and the dock keeps one set of widgets on the desktop and another over your apps. It starts as a copy of your desktop widgets and stays off until you switch it on.
 
 ### Better
-- **Settings is lighter.** The dock's own choices moved into its editor; **Position** in Settings picks the edge, and where it sits along the bottom is in the editor.
+- **Undo and redo cover both places,** including both sets of widgets.
 
 > [!NOTE]
 > The executable is not code-signed yet, so Windows SmartScreen may show an "unknown publisher" warning the first time. Click **More info → Run anyway**.

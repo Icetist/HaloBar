@@ -31,6 +31,7 @@ constexpr float kFileCell = 92, kFileRowH = 84;
 constexpr int kGalCols = 3;
 constexpr float kCardH = 106, kGalGap = 9, kTabsH = 30, kSelH = 52;
 constexpr float kSongW = 170; // the song's switch, beside the search
+constexpr float kSplitW = 200; // over apps in the editor: their own widgets or the desktop's
 
 }
 
@@ -399,7 +400,17 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         return h.clicked;
     };
     faceHost = FaceHost();
-    D2D1_RECT_F find = Rect(r.left - 6, r.top - 6, Width(r) + 12 - kSongW - 16, 26); // typing searches every widget
+    bool appsTab = editing && studioCtx == 1; // the editor on over apps: whether they keep widgets of their own
+    float splitW = appsTab ? kSplitW + 10 : 0;
+    D2D1_RECT_F find = Rect(r.left - 6, r.top - 6, Width(r) + 12 - kSongW - 16 - splitW, 26); // typing searches every widget
+    if (appsTab) {
+        bool flip = false;
+        setui::Toggle(ui, t, "gal.split", Rect(find.right + 10, r.top - 6, kSplitW, 26), L"Own widgets over apps", cfg.wgSplit != 0, flip);
+        if (flip) {
+            if (!cfg.wgSplit && sys::ReadText(L"WidgetLayoutApps").empty()) wgSlotsOther = wgSlots, SaveSet(true); // first time: they start as the desktop's
+            SetDock(&prefs::Settings::wgSplit, L"WidgetSplit", cfg.wgSplit ? 0 : 1);
+        }
+    }
     c.Fill(find, 13, t.text.Alpha(0.06f));
     c.Icon(glyph::Search, {find.left + 15, find.top + 13}, 14, t.textDim);
     D2D1_RECT_F words = {find.left + 28, find.top, find.right - 8, find.bottom};
