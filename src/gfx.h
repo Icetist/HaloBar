@@ -81,6 +81,7 @@ public:
 
     void Text(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, Align a = Align::Left);
     float TextOnce(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c); // never cached (secrets); returns the drawn width
+    float Measure(const std::wstring& s, Weight w, float size); // a single line's width in dips, from the same cached layouts Text draws
     void TextSp(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, float spacing, Align a = Align::Left);
     void Icon(int glyph, D2D1_POINT_2F center, float size, Color c, bool filled = false);
 

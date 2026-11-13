@@ -6,19 +6,26 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 
 #include "faces_state.h"
 #include "feeds.h"
 #include "glyphs.h"
+#include "sports.h"
 
 namespace faces {
 namespace {
 
 constexpr float kPi = 3.14159265f;
-constexpr float kPad = 9;
+constexpr float kPad = 9; // a face's margin in the dock
 constexpr float kTinyW = 60; // narrower than this: an icon and a number
 constexpr float kTallH = 72; // taller than this: a card with room to breathe
-constexpr uint32_t kUp = 0x4ADE80, kDown = 0xFF6B6B;
+constexpr float kSparkEnd = 4; // room for the dot at a line's end
+constexpr float kSparkShare = 0.38f; // of a wide face, the line's part: the words keep the rest
+constexpr uint32_t kUp = 0x4ADE80, kDown = 0xFF6B6B, kUpPale = 0x15803D, kDownPale = 0xDC2626; // the pale ones for a light tile
+
+Color Good(const Theme& t) { return Color::Rgb(theme::Luma(t.text) < 0.4f ? kUpPale : kUp); }
+Color Bad(const Theme& t) { return Color::Rgb(theme::Luma(t.text) < 0.4f ? kDownPale : kDown); }
 
 constexpr int kClockG = glyph::Timer, kWebG = glyph::Web, kMoneyG = glyph::Bolt, kPeopleG = glyph::Phone;
 
@@ -117,6 +124,12 @@ const Meta kAll[] = {
     {"files.documents", L"Documents", L"Your documents folder's newest files", kFiles, glyph::Folder, 7, 0, 136, 196, nullptr, true},
     {"files.photo", L"Photo", L"A picture from your Pictures folder", kFiles, glyph::Pc, 7, 1, 116, 184, nullptr, true},
     {"files.emoji", L"Emoji", L"Windows' emoji panel, into what you type", kFiles, glyph::Edit, 1, 0, 44, 44, nullptr, true},
+    // added after 0.0.12: kept last, as a dock saves each face by its place in this list
+    {"stock.us", L"US Markets", L"The S&P 500, Dow, Nasdaq, Russell 2000 and VIX, each with its day, and whether New York is open", kMoney, glyph::Up, 6, 2, 196, 280, nullptr, false},
+    {"stock.amex", L"NYSE American", L"The NYSE American Composite and its day", kMoney, glyph::Up, 7, 1, 176, 256, nullptr, false},
+    // sports
+    {"sport.scores", L"Scores", L"Live scores from up to three leagues, else their latest results", kSports, glyph::Leaderboard, 6, 1, 196, 280, nullptr, false},
+    {"sport.fixtures", L"Fixtures", L"Upcoming games by day, in your time", kSports, glyph::Calendar, 6, 2, 196, 280, nullptr, false},
 };
 
 constexpr int kKinds = (int)(sizeof(kAll) / sizeof(kAll[0]));
@@ -160,15 +173,64 @@ double Frac(int kind) { // day, month, year
     return (doy + day) / (leap ? 366 : 365);
 }
 
-void Spark(Canvas& c, const D2D1_RECT_F& r, const std::vector<double>& pts, Color ink) {
-    if (pts.size() < 2) return;
+bool gSampling = false; // a preview in the gallery: what it would look like, with nothing fetched
+
+feeds::Series Sample(const std::string& id) {
+    feeds::Series s;
+    constexpr int kPoints = 30;
+    s.ok = true, s.value = 1284, s.total = 48210, s.week = 12840, s.change = 0.124, s.extra = 7, s.extra2 = 1250, s.text = L"Followers";
+    for (int i = 0; i < kPoints; ++i) s.points.push_back(40 + 25 * std::sin(i * 0.55) + i * 1.6);
+    if (id.rfind("quote:", 0) == 0) s.value = 212.48, s.change = 0.0087;
+    if (id == "sky") s.points = {360, 1080}, s.value = 12, s.extra = 0.4;
+    if (id == "thermal") s.value = 62;
+    if (id == "rates") s.value = 0.92, s.text = L"1 USD in EUR";
+    if (id == "metric") s.value = 68120, s.text = L"BTC-USD";
+    if (id == "supabase") s.text = L"Healthy";
+    if (id == "github.activity") {
+        s.points.clear();
+        for (int i = 0; i < 200; ++i) s.points.push_back((i * 7) % 5 == 0 ? 0 : (i * 13) % 9);
+    }
+    if (id.rfind("sport:", 0) == 0) { // made-up games: one on, one done, one next
+        s.rows = {sports::Encode({sports::kLive, L"Arsenal", L"2", L"Chelsea", L"1", L"67'", 0, false}),
+                  sports::Encode({sports::kFinal, L"Lakers", L"112", L"Celtics", L"108", L"Final", 0, false}),
+                  sports::Encode({sports::kPre, L"Barcelona", L"", L"Real Madrid", L"", L"Sat 20:00", 0, false})};
+        s.value = 1;
+    }
+    if (id.rfind("next:", 0) == 0) // made-up fixtures, two days of them
+        s.rows = {sports::Encode({sports::kPre, L"Arsenal", L"", L"Chelsea", L"", L"Sat 15:00", 1, false}), sports::Encode({sports::kPre, L"Liverpool", L"", L"Spurs", L"", L"Sat 17:30", 2, false}),
+                  sports::Encode({sports::kPre, L"Lakers", L"", L"Celtics", L"", L"Sun 01:30", 3, false})};
+    return s;
+}
+
+feeds::Series Feed(const std::string& id) { return gSampling ? Sample(id) : feeds::Get(id); }
+
+void Spark(Canvas& c, const D2D1_RECT_F& r, const std::vector<double>& pts, Color ink) { // a line with its area fading out under it
+    if (pts.size() < 2 || Width(r) < 8 || Height(r) < 8) return;
     double lo = pts[0], hi = pts[0];
     for (double p : pts) lo = (std::min)(lo, p), hi = (std::max)(hi, p);
     if (hi - lo < 1e-9) hi = lo + 1;
-    float step = Width(r) / (float)(pts.size() - 1);
-    auto at = [&](size_t i) { return D2D1_POINT_2F{r.left + step * i, r.bottom - Height(r) * (float)((pts[i] - lo) / (hi - lo))}; };
-    for (size_t i = 1; i < pts.size(); ++i) c.Line(at(i - 1), at(i), ink, 1.4f);
-    c.Dot(at(pts.size() - 1), 2.2f, ink);
+    float step = Width(r) / (float)(pts.size() - 1), rise = Height(r) - kSparkEnd;
+    auto at = [&](size_t i) { return D2D1_POINT_2F{r.left + step * i, r.bottom - rise * (float)((pts[i] - lo) / (hi - lo))}; };
+    ComPtr<ID2D1PathGeometry> line, area;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(gfx::D2D()->CreatePathGeometry(&line)) || FAILED(gfx::D2D()->CreatePathGeometry(&area))) return;
+    if (SUCCEEDED(area->Open(&sink))) {
+        sink->BeginFigure({r.left, r.bottom}, D2D1_FIGURE_BEGIN_FILLED);
+        for (size_t i = 0; i < pts.size(); ++i) sink->AddLine(at(i));
+        sink->AddLine({r.right, r.bottom});
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink->Close();
+    }
+    sink.Reset();
+    if (SUCCEEDED(line->Open(&sink))) {
+        sink->BeginFigure(at(0), D2D1_FIGURE_BEGIN_HOLLOW);
+        for (size_t i = 1; i < pts.size(); ++i) sink->AddLine(at(i));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+    }
+    c.FillGeoV(area.Get(), r, ink.Alpha(0.26f), ink.Alpha(0));
+    c.StrokeGeo(line.Get(), ink, 1.7f);
+    c.Dot(at(pts.size() - 1), 2.8f, ink);
 }
 
 void Stat(Canvas& c, const Theme& t, const D2D1_RECT_F& r, int g, const std::wstring& name, const std::wstring& main, const std::wstring& sub, const std::vector<double>* pts = nullptr, Color ink = {}) { // the common face
@@ -182,7 +244,7 @@ void Stat(Canvas& c, const Theme& t, const D2D1_RECT_F& r, int g, const std::wst
     if (h < kTallH) {
         c.Icon(g, {r.left + kPad + 10, mid}, 19, lit, true);
         float tx = r.left + kPad + 26;
-        float room = pts && w > 150 ? w * 0.48f : 0;
+        float room = pts && w > 150 ? w * kSparkShare : 0;
         float tw = r.right - kPad - tx - room;
         if (sub.empty()) {
             c.Text(main, Rect(tx, r.top, tw, h), Weight::Semi, 12.5f, t.text);
@@ -211,7 +273,7 @@ void RingFace(Canvas& c, const Theme& t, const D2D1_RECT_F& r, const std::wstrin
     bool tall = h >= kTallH;
     D2D1_POINT_2F o = w < kTinyW ? D2D1_POINT_2F{(r.left + r.right) / 2, mid} : D2D1_POINT_2F{r.left + kPad + rad, mid};
     if (tall) rad = (std::min)(w, h) * 0.32f, o = {(r.left + r.right) / 2, r.top + h * 0.45f};
-    Color hot = Color::Rgb(kDown);
+    Color hot = Bad(t);
     c.Ring(o, rad, t.text.Alpha(0.14f), tall ? 5.0f : 2.5f);
     c.Arc(o, rad, -kPi / 2, 2 * kPi * (float)(std::clamp)(v, 0.0, 1.0), v > 0.85 ? hot : t.accentHi, tall ? 5.0f : 2.5f);
     if (tall) {
@@ -274,7 +336,7 @@ void Clock7(Canvas& c, const Theme& t, const D2D1_RECT_F& r, const SYSTEMTIME& s
     }
 }
 
-Color Trend(const Theme& t, double change) { return change > 0.0005 ? Color::Rgb(kUp) : change < -0.0005 ? Color::Rgb(kDown) : t.textDim; }
+Color Trend(const Theme& t, double change) { return change > 0.0005 ? Good(t) : change < -0.0005 ? Bad(t) : t.textDim; }
 
 std::wstring Pct(double change) {
     wchar_t b[24];
@@ -282,30 +344,34 @@ std::wstring Pct(double change) {
     return b;
 }
 
-std::wstring NotYet(const feeds::Series& s) { return s.error.empty() ? std::wstring(L"Fetching…") : s.error; }
+std::wstring NotYet(const feeds::Series& s) { // a feed with nothing yet, in as few words as fit a tile
+    if (s.error.empty()) return L"Fetching…";
+    return s.error.rfind(L"Connect", 0) == 0 || s.error.rfind(L"Enter", 0) == 0 ? L"Click to connect" : s.error;
+}
+
 
 void MoneyFace(Canvas& c, const Theme& t, int kind, const D2D1_RECT_F& r) {
     const Meta& m = kAll[kind];
-    feeds::Series s = feeds::Get(m.feed);
+    feeds::Series s = Feed(m.feed);
     std::wstring sym = feeds::Setting("money.sym");
     if (sym.empty()) sym = L"$";
     bool chart = wcsstr(m.name, L"Chart") != nullptr;
-    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, L"--", NotYet(s));
-    if (chart) return Stat(c, t, r, m.glyph, m.name, sym + Short(s.week) + L" this week", Pct(s.change), &s.points, Trend(t, s.change));
+    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, NotYet(s));
+    if (chart) return Stat(c, t, r, m.glyph, m.name, sym + Short(s.week), Pct(s.change) + L" this week", &s.points, Trend(t, s.change));
     Stat(c, t, r, m.glyph, m.name, sym + Short(s.total), L"Last 30 days");
 }
 
 void VisitFace(Canvas& c, const Theme& t, int kind, const D2D1_RECT_F& r, const wchar_t* unit) {
     const Meta& m = kAll[kind];
-    feeds::Series s = feeds::Get(m.feed);
-    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, L"--", NotYet(s));
+    feeds::Series s = Feed(m.feed);
+    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, NotYet(s));
     Stat(c, t, r, m.glyph, m.name, Short(s.week) + L" " + unit, Pct(s.change) + L" this week", &s.points, Trend(t, s.change));
 }
 
 void CountFace(Canvas& c, const Theme& t, int kind, const D2D1_RECT_F& r, const std::wstring& words) {
     const Meta& m = kAll[kind];
-    feeds::Series s = feeds::Get(m.feed);
-    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, L"--", NotYet(s));
+    feeds::Series s = Feed(m.feed);
+    if (!s.ok) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, NotYet(s));
     Stat(c, t, r, m.glyph, m.name, Short(s.value), words);
 }
 
@@ -318,6 +384,62 @@ std::string QuoteId(const std::wstring& ticker) {
     std::string id = "quote:";
     for (wchar_t ch : ticker) id += (char)ch;
     return id;
+}
+
+constexpr wchar_t kAmex[] = L"^XAX"; // the nyse american composite
+const Market kUsIndex[] = {{L"S&P 500", L"^GSPC"}, {L"Dow Jones", L"^DJI"}, {L"Nasdaq", L"^IXIC"}, {L"Russell 2000", L"^RUT"}, {L"VIX", L"^VIX"}, {L"NYSE Composite", L"^NYA"},
+                           {L"NYSE American", L"^XAX"}, {L"10-year Treasury", L"^TNX"}, {L"Gold", L"GC=F"}, {L"Crude oil", L"CL=F"}}; // the first says whether new york is open
+constexpr size_t kUsMoreMax = 20; // tickers added in its panel
+
+int scoresFrom = 0, scoresCount = 0, scoresRows = 0; // the scores face is on this many games down; how many it had and showed last drawn
+
+std::wstring GameLine(const sports::Game& g) { // "Arsenal 2–1 Chelsea", "Lakers v Celtics", or a race's name
+    if (g.solo) return g.b.empty() ? g.a : g.a + L"  ·  " + g.b;
+    if (g.state == sports::kPre) return g.a + L" v " + g.b;
+    return g.a + L" " + g.as + L"–" + g.bs + L" " + g.b;
+}
+
+std::vector<sports::Game> Games(bool ahead, feeds::Series& first) { // every followed league's games, and the first feed for what it says when there are none
+    std::vector<sports::Game> games;
+    for (const std::string& l : sports::Followed()) {
+        std::vector<std::string> ids = {sports::FeedId(l)};
+        if (ahead && l != "chess") ids.push_back(sports::NextId(l));
+        for (const std::string& id : ids) {
+            feeds::Series s = Feed(id);
+            if (first.rows.empty() && first.error.empty()) first = s;
+            for (const std::wstring& row : s.rows) games.push_back(sports::Decode(row));
+        }
+    }
+    return sports::Order(std::move(games));
+}
+
+void GameFace(Canvas& c, const Theme& t, const Meta& m, const D2D1_RECT_F& r, const sports::Game& g) {
+    bool live = g.state == sports::kLive;
+    Stat(c, t, r, m.glyph, m.name, GameLine(g), Width(r) < kTinyW ? L"" : live ? L"Live  " + g.detail : g.detail, nullptr, live ? Bad(t) : t.accentHi);
+}
+
+void DrawSports(Canvas& c, const Theme& t, const Meta& m, const D2D1_RECT_F& r) { // the game that matters most: one on now, else the latest result; the wheel goes through the rest
+    feeds::Series first;
+    std::vector<sports::Game> games = Games(false, first);
+    bool tiny = Width(r) < kTinyW;
+    if (sports::Followed().empty()) return Stat(c, t, r, m.glyph, m.name, m.name, tiny ? L"" : L"Click to pick leagues");
+    if (games.empty()) return Stat(c, t, r, m.glyph, m.name, m.name, tiny ? L"" : first.ok ? std::wstring(L"Nothing played lately") : NotYet(first));
+    if (!gSampling) scoresCount = (int)games.size(), scoresRows = 1; // the gallery's preview isn't the face
+    scoresFrom = gSampling ? 0 : (std::clamp)(scoresFrom, 0, scoresCount - 1);
+    GameFace(c, t, m, r, games[(size_t)scoresFrom]);
+}
+
+void DrawFixtures(Canvas& c, const Theme& t, const Meta& m, const D2D1_RECT_F& r) { // what's on now, else the next game, else the last result
+    feeds::Series first;
+    std::vector<sports::Game> games = Games(true, first);
+    bool tiny = Width(r) < kTinyW;
+    if (sports::Followed().empty()) return Stat(c, t, r, m.glyph, m.name, m.name, tiny ? L"" : L"Click to pick leagues");
+    auto in = [&](int state) { return std::find_if(games.begin(), games.end(), [&](const sports::Game& g) { return g.state == state; }); };
+    auto pick = in(sports::kLive);
+    if (pick == games.end()) pick = in(sports::kPre);
+    if (pick == games.end()) pick = in(sports::kFinal);
+    if (pick == games.end()) return Stat(c, t, r, m.glyph, m.name, m.name, tiny ? L"" : first.ok || gSampling ? std::wstring(L"Nothing this week") : NotYet(first));
+    GameFace(c, t, m, r, *pick);
 }
 
 std::vector<std::wstring> Watch() {
@@ -451,18 +573,18 @@ void DrawClock(Canvas& c, const Theme& t, const std::string& key, const Meta& m,
 void DrawWeather(Canvas& c, const Theme& t, const std::string& key, const Meta& m, const D2D1_RECT_F& r, const Host& h, const SYSTEMTIME& st) {
     float w = Width(r), rh = Height(r), mid = (r.top + r.bottom) / 2, cx = (r.left + r.right) / 2;
     bool tiny = w < kTinyW, tall = rh >= kTallH;
-    if (!h.wxValid && key != "wx.sun") return Stat(c, t, r, m.glyph, m.name, L"--", tiny ? L"" : L"Finding the forecast");
+    if (!h.wxValid && key != "wx.sun") return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, tiny ? L"" : L"Finding the forecast");
     if (key == "wx.status") return Stat(c, t, r, WxIcon(h.wxCode, h.wxDay), m.name, WxText(h.wxCode), tiny ? L"" : h.place);
     if (key == "wx.details") {
-        feeds::Series s = feeds::Get("sky");
+        feeds::Series s = Feed("sky");
         wchar_t a[48], b[64];
         swprintf_s(a, L"Wind %.0f km/h", s.value);
         swprintf_s(b, L"Rain %.1f mm  ·  %ls–%ls", s.extra, Deg(h.lowC, h.fahrenheit).c_str(), Deg(h.highC, h.fahrenheit).c_str());
         return Stat(c, t, r, WxIcon(h.wxCode, h.wxDay), m.name, s.ok ? std::wstring(a) : Deg(h.tempC, h.fahrenheit), tiny ? L"" : s.ok ? std::wstring(b) : NotYet(s));
     }
     if (key == "wx.sun") {
-        feeds::Series s = feeds::Get("sky");
-        if (!s.ok || s.points.size() < 2 || s.points[0] < 0) return Stat(c, t, r, glyph::ClearDay, m.name, L"--", tiny ? L"" : NotYet(s));
+        feeds::Series s = Feed("sky");
+        if (!s.ok || s.points.size() < 2 || s.points[0] < 0) return Stat(c, t, r, glyph::ClearDay, m.name, Width(r) < kTinyW ? L"--" : m.name, tiny ? L"" : NotYet(s));
         auto hm = [](double mins) {
             wchar_t b[12];
             swprintf_s(b, L"%02d:%02d", (int)mins / 60, (int)mins % 60);
@@ -524,7 +646,7 @@ void DrawWork(Canvas& c, const Theme& t, const std::string& key, const Meta& m, 
     bool tiny = w < kTinyW, tall = rh >= kTallH;
     if (key == "time.timeline") {
         feeds::Screen s = feeds::ScreenTime();
-        feeds::Series sky = feeds::Get("sky");
+        feeds::Series sky = Feed("sky");
         D2D1_RECT_F lane = Rect(r.left + kPad, mid - 3, w - 2 * kPad, 8);
         c.Fill(lane, 4, t.text.Alpha(0.08f));
         float hw = Width(lane) / 24;
@@ -555,7 +677,7 @@ void DrawWork(Canvas& c, const Theme& t, const std::string& key, const Meta& m, 
         std::wstring sub = state::WatchRunning() ? L"Running" : v > 0 ? L"Paused" : L"Click to start";
         Stat(c, t, r, m.glyph, m.name, b, tiny ? L"" : sub, nullptr, state::WatchRunning() ? t.accentHi : t.textDim);
     } else if (key == "money.currency") {
-        feeds::Series s = feeds::Get("rates");
+        feeds::Series s = Feed("rates");
         wchar_t b[32];
         swprintf_s(b, L"%.4g", s.value);
         Stat(c, t, r, m.glyph, m.name, s.ok ? std::wstring(b) : L"--", tiny ? L"" : s.ok ? s.text : NotYet(s));
@@ -593,15 +715,15 @@ void DrawSystem(Canvas& c, const Theme& t, const std::string& key, const Meta& m
         if (h.memTotalGb > 0) swprintf_s(b, L"%.1f of %.0f GB", h.memUsedGb, h.memTotalGb);
         RingFace(c, t, r, L"Memory", h.mem, std::to_wstring((int)std::lround(h.mem * 100)), b);
     } else if (key == "sys.temp") {
-        feeds::Series s = feeds::Get("thermal");
+        feeds::Series s = Feed("thermal");
         wchar_t b[48];
         swprintf_s(b, L"CPU %d%%  ·  RAM %d%%", (int)std::lround(h.cpu * 100), (int)std::lround(h.mem * 100));
         std::wstring why = s.error.empty() ? L"Reading…" : s.error;
-        Stat(c, t, r, m.glyph, m.name, s.ok ? std::to_wstring((int)std::lround(s.value)) + L"°" : L"--", tiny ? L"" : s.ok ? std::wstring(b) : why, nullptr, s.ok && s.value > 85 ? Color::Rgb(kDown) : t.accentHi);
+        Stat(c, t, r, m.glyph, m.name, s.ok ? std::to_wstring((int)std::lround(s.value)) + L"°" : L"--", tiny ? L"" : s.ok ? std::wstring(b) : why, nullptr, s.ok && s.value > 85 ? Bad(t) : t.accentHi);
     } else if (key == "sys.lang") {
         Stat(c, t, r, m.glyph, m.name, state::Language(), tiny ? L"" : L"Click to switch");
     } else if (key == "sys.bright") {
-        if (h.bright < 0) return Stat(c, t, r, m.glyph, m.name, L"--", tiny ? L"" : L"Not on this display");
+        if (h.bright < 0) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, tiny ? L"" : L"Not on this display");
         Stat(c, t, r, m.glyph, m.name, std::to_wstring(h.bright) + L"%", tiny ? L"" : L"Click for the slider");
     } else if (key == "sys.theme") {
         Stat(c, t, r, m.glyph, m.name, state::LightTheme() ? L"Light" : L"Dark", tiny ? L"" : L"Click to switch");
@@ -615,7 +737,7 @@ void DrawSystem(Canvas& c, const Theme& t, const std::string& key, const Meta& m
         swprintf_s(b, L"%.0f GB free", freeBytes.QuadPart / 1073741824.0);
         if (tiny) return RingFace(c, t, r, m.name, used, std::to_wstring((int)(used * 100)), L"");
         Stat(c, t, r, m.glyph, m.name, b, L"");
-        Color ink = used > 0.9 ? Color::Rgb(kDown) : t.accentHi;
+        Color ink = used > 0.9 ? Bad(t) : t.accentHi;
         if (tall) Lane(c, t, Rect(r.left + 16, r.bottom - 22, w - 32, 6), used, ink);
         else Lane(c, t, Rect(r.left + kPad + 26, r.bottom - 10, w - 2 * kPad - 26, 3), used, ink);
         (void)rh;
@@ -646,23 +768,44 @@ void DrawMediaFace(Canvas& c, const Theme& t, const std::string& key, const D2D1
 void DrawOnline(Canvas& c, const Theme& t, int kind, const std::string& key, const Meta& m, const D2D1_RECT_F& r) {
     float w = Width(r), rh = Height(r), mid = (r.top + r.bottom) / 2;
     bool tiny = w < kTinyW, tall = rh >= kTallH;
-    feeds::Series s = m.feed ? feeds::Get(m.feed) : feeds::Series{};
+    feeds::Series s = m.feed ? Feed(m.feed) : feeds::Series{};
     if (key == "money.metric") {
         wchar_t b[32];
         swprintf_s(b, s.value >= 100 ? L"%.0f" : L"%.2f", s.value);
         Stat(c, t, r, m.glyph, s.ok ? s.text : m.name, s.ok ? std::wstring(b) : L"--", tiny ? L"" : s.ok ? s.text : NotYet(s));
     } else if (key == "stock.one" || key == "stock.chart") {
         std::wstring tick = Ticker("stock.id", L"AAPL");
-        feeds::Series q = feeds::Get(QuoteId(tick));
+        feeds::Series q = Feed(QuoteId(tick));
         wchar_t b[32];
         swprintf_s(b, L"%.2f", q.value);
         if (!q.ok) return Stat(c, t, r, m.glyph, tick, tick, tiny ? L"" : NotYet(q));
         Stat(c, t, r, q.change >= 0 ? glyph::Up : glyph::Down, tick, tick + L"  " + b, tiny ? L"" : Pct(q.change), key == "stock.chart" ? &q.points : nullptr, Trend(t, q.change));
+    } else if (key == "stock.us") { // the big three side by side, each with its day; a dot says whether new york is trading
+        feeds::Series lead = Feed(QuoteId(kUsIndex[0].tick));
+        feeds::Phase phase = gSampling ? feeds::kOpen : feeds::MarketPhase(lead);
+        if (tiny) return Stat(c, t, r, m.glyph, m.name, lead.ok ? Pct(lead.change) : L"--", L"", nullptr, Trend(t, lead.change));
+        constexpr float kPhaseW = 10;
+        constexpr size_t kUsRoomy = 4, kUsFew = 3; // a large face has room for the russell too
+        size_t shown = w >= 260 ? kUsRoomy : kUsFew;
+        c.Dot({r.left + kPad + 2, mid}, 3, phase == feeds::kOpen ? Good(t) : phase == feeds::kClosed ? t.textLow : t.accentHi);
+        float cw = (w - 2 * kPad - kPhaseW) / (float)shown;
+        for (size_t i = 0; i < shown; ++i) {
+            feeds::Series q = Feed(QuoteId(kUsIndex[i].tick));
+            float x = r.left + kPad + kPhaseW + cw * i;
+            c.Text(kUsIndex[i].label, Rect(x, mid - 15, cw - 4, 14), Weight::Semi, 10, t.text);
+            c.Text(q.ok ? Pct(q.change) : q.error.empty() ? L"…" : L"--", Rect(x, mid + 1, cw - 4, 14), Weight::Medium, 10, q.ok ? Trend(t, q.change) : t.textLow);
+        }
+    } else if (key == "stock.amex") {
+        feeds::Series q = Feed(QuoteId(kAmex));
+        wchar_t b[32];
+        swprintf_s(b, L"%.2f", q.value);
+        if (!q.ok) return Stat(c, t, r, m.glyph, m.name, m.name, tiny ? L"" : NotYet(q));
+        Stat(c, t, r, q.change >= 0 ? glyph::Up : glyph::Down, m.name, b, tiny ? L"" : Pct(q.change) + L"  " + m.name, &q.points, Trend(t, q.change));
     } else if (key == "stock.watch") {
         auto list = Watch();
         float cw = (w - 2 * kPad) / (float)(std::max)((size_t)1, list.size());
         for (size_t i = 0; i < list.size(); ++i) {
-            feeds::Series q = feeds::Get(QuoteId(list[i]));
+            feeds::Series q = Feed(QuoteId(list[i]));
             float x = r.left + kPad + cw * i;
             wchar_t b[32];
             swprintf_s(b, L"%.2f", q.value);
@@ -675,7 +818,7 @@ void DrawOnline(Canvas& c, const Theme& t, int kind, const std::string& key, con
     } else if (key == "web.dub") {
         VisitFace(c, t, kind, r, L"clicks");
     } else if (key == "web.resend") {
-        if (!s.ok) return Stat(c, t, r, m.glyph, m.name, L"--", tiny ? L"" : NotYet(s));
+        if (!s.ok) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, tiny ? L"" : NotYet(s));
         Stat(c, t, r, m.glyph, m.name, Short(s.week) + L" sent", tiny ? L"" : L"This week");
     } else if (key == "web.linear") {
         CountFace(c, t, kind, r, tiny ? L"" : Short(s.extra) + L" started");
@@ -688,7 +831,7 @@ void DrawOnline(Canvas& c, const Theme& t, int kind, const std::string& key, con
     } else if (key == "web.githubover") {
         CountFace(c, t, kind, r, Short(s.extra) + L" PRs  ·  " + Short(s.extra2) + L" stars");
     } else if (key == "web.githubgrid") {
-        if (!s.ok) return Stat(c, t, r, m.glyph, m.name, L"--", tiny ? L"" : NotYet(s));
+        if (!s.ok) return Stat(c, t, r, m.glyph, m.name, Width(r) < kTinyW ? L"--" : m.name, tiny ? L"" : NotYet(s));
         int rows = 7, cols = (std::max)(1, (int)((w - 2 * kPad) / (tall ? 8.0f : 4.6f)));
         float cell = (std::min)((w - 2 * kPad) / cols, (rh - 8) / rows);
         size_t show = (std::min)((size_t)(cols * rows), s.points.size()), from = s.points.size() - show;
@@ -707,6 +850,35 @@ void DrawOnline(Canvas& c, const Theme& t, int kind, const std::string& key, con
 
 }
 
+void Sampling(bool on) { gSampling = on; }
+
+bool Wheel(int kind, float notches) {
+    if (kind < 0 || kind >= kKinds || strcmp(kAll[kind].key, "sport.scores") != 0) return false;
+    int most = (std::max)(0, scoresCount - scoresRows);
+    if (most == 0) return false; // all of it shows: the board scrolls instead
+    scoresFrom = (std::clamp)(scoresFrom - (int)std::lround(notches), 0, most); // zero notches only asks; over it, the wheel is its own even at an end
+    return true;
+}
+
+const std::vector<Market>& UsMarkets() {
+    static const std::vector<Market> all(std::begin(kUsIndex), std::end(kUsIndex));
+    return all;
+}
+
+std::vector<std::wstring> UsMoreTickers() {
+    std::wstring all = feeds::Setting("us.more");
+    std::vector<std::wstring> out;
+    for (size_t a = 0; a < all.size() && out.size() < kUsMoreMax;) {
+        size_t e = (std::min)(all.find(L',', a), all.size());
+        std::wstring one;
+        for (wchar_t ch : all.substr(a, e - a))
+            if (ch != L' ') one += (wchar_t)towupper(ch); // tickers are upper case, whatever was typed
+        if (!one.empty() && std::find(out.begin(), out.end(), one) == out.end()) out.push_back(one);
+        a = e + 1;
+    }
+    return out;
+}
+
 int Count() { return kKinds; }
 const Meta& Info(int kind) { return kAll[(std::clamp)(kind, 0, kKinds - 1)]; }
 
@@ -717,7 +889,7 @@ int Find(const char* key) {
 }
 
 const wchar_t* CatName(int cat) {
-    static const wchar_t* const kNames[kCats] = {L"Clocks", L"Weather", L"Productivity", L"System", L"Media", L"Money", L"Online", L"Apps & Files"};
+    static const wchar_t* const kNames[kCats] = {L"Clocks", L"Weather", L"Productivity", L"System", L"Media", L"Money", L"Online", L"Apps & Files", L"Sports"};
     return kNames[(std::clamp)(cat, 0, kCats - 1)];
 }
 
@@ -765,6 +937,8 @@ void Draw(Canvas& c, const Theme& t, int kind, int, const D2D1_RECT_F& r, const 
     if (key.rfind("sys.", 0) == 0) return DrawSystem(c, t, key, m, r, h);
     if (key.rfind("media.", 0) == 0) return DrawMediaFace(c, t, key, r, h);
     if (key.rfind("money.", 0) == 0 && key != "money.metric") return MoneyFace(c, t, kind, r);
+    if (key == "sport.scores") return DrawSports(c, t, m, r);
+    if (key == "sport.fixtures") return DrawFixtures(c, t, m, r);
     if (key == "money.metric" || key.rfind("stock.", 0) == 0 || key.rfind("web.", 0) == 0 || key.rfind("social.", 0) == 0) return DrawOnline(c, t, kind, key, m, r);
     if (key == "files.websearch") {
         D2D1_RECT_F f = Inset(r, 5, (std::max)(5.0f, rh / 2 - 16));
@@ -777,6 +951,11 @@ void Draw(Canvas& c, const Theme& t, int kind, int, const D2D1_RECT_F& r, const 
     if (key == "files.photo") return state::DrawPhoto(c, t, r);
     if (tiny) return c.Icon(m.glyph, {cx, mid}, 19, t.textDim);
     Stat(c, t, r, m.glyph, m.name, m.name, tall ? m.about : L"", nullptr, t.textDim);
+}
+
+std::string& OpenMatch() {
+    static std::string id;
+    return id;
 }
 
 std::vector<std::string> Feeds(const std::vector<int>& kinds) {
@@ -798,6 +977,22 @@ std::vector<std::string> Feeds(const std::vector<int>& kinds) {
         if (key == "stock.one" || key == "stock.chart") add(QuoteId(Ticker("stock.id", L"AAPL")));
         if (key == "stock.watch")
             for (const auto& one : Watch()) add(QuoteId(one));
+        if (key == "stock.us") { // its panel lists every one, and what's been added
+            for (const auto& idx : kUsIndex) add(QuoteId(idx.tick));
+            for (const std::wstring& one : UsMoreTickers()) add(QuoteId(one));
+        }
+        if (key == "stock.amex") add(QuoteId(kAmex));
+        if (key == "sport.scores")
+            for (const std::string& l : sports::Followed()) {
+                add(sports::FeedId(l));
+                if (l != "chess") add(sports::NextId(l)); // its panel shows the week either side too
+            }
+        if (key == "sport.fixtures")
+            for (const std::string& l : sports::Followed()) {
+                add(sports::FeedId(l)); // what's on now
+                if (l != "chess") add(sports::NextId(l));
+            }
+        if ((key == "sport.scores" || key == "sport.fixtures") && !OpenMatch().empty()) add(OpenMatch()); // a game opened in its panel
     }
     return out;
 }

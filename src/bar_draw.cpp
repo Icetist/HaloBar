@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "glyphs.h"
+#include "chrome.h"
 #include "starfall.h"
 #include "overflow.h"
 
@@ -179,6 +180,8 @@ void Bar::PaintShape(ID2D1Geometry* shape, const Theme& t) { // a panel: island'
     Canvas& c = *canvas;
     c.FillGeometry(shape, Body(t)); // the dock's opacity, so a panel reads as part of it
     if (t.stars) starfall::Sky(c, pill, 0, t, skyT, Body(t).a, 1, shape, 1, skyDrift); // island's starfall: its orb drifts while the dropdown is open
+    else if (D2D1_RECT_F all{}; t.chrome && SUCCEEDED(shape->GetBounds(nullptr, &all)))
+        chrome::Metal(c, all, 0, skyDrift ? skyT : 0, Body(t).a, shape); // chrome: the metal flows while the dropdown is open; over the whole shape, so its brush covers every pixel
     if (!t.glass) return;
     if (glassShade > 0.01f) c.FillGeometry(shape, Tint(glassShade));
     D2D1_RECT_F o = pill; // island's glass: gloss from the top, a bright rim

@@ -9,7 +9,9 @@
 
 #include "clips.h"
 #include "glyphs.h"
+#include "hints.h"
 #include "report.h"
+#include "chrome.h"
 #include "starfall.h"
 #include "setui.h"
 #include "version.h"
@@ -55,6 +57,7 @@ void Toggle(Ui& ui, const Theme& t, const char* id, const D2D1_RECT_F& row, cons
     ui.NoStop(); // the keyboard stops on the switch; the words only widen the mouse's target
     c.Text(label, Rect(row.left, row.top, Width(row) - 56, Height(row)), Weight::Regular, 11.5f, t.text);
     if (w::Switch(ui, t, Ui::Id(id), {row.right - 24, (row.top + row.bottom) / 2}, on) || h.clicked) flip = true; // reported, so the caller saves it after drawing
+    hints::Want(ui, hints::ForId(id), Inside(row, ui.In().mouse)); // hovered a moment: a sketch of what it does
 }
 
 void Note(Canvas& c, const Theme& t, const D2D1_RECT_F& in, float y, const wchar_t* text) { // a quiet line under the controls, as island's
@@ -456,9 +459,9 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
     bool ownGlass = cfg.look == 2 || cfg.look == prefs::Settings::kClear; // only the bar's own glass gets a blur slider, clear's panels included; island's glass is island's to tune
     bool ownBody = !ownGlass && OwnOpacity() && LookNow() != 2 && !Clear(); // the solid looks get island's opacity slider; glass has no body to thin
     Seed s = theme::FromCol(t.accent); // every swatch is tinted with the live accent
-    static const wchar_t* const kNames[] = {L"Astraeus", L"Dark", L"Light", L"Glass", L"Custom"};
-    static const int kLooks[] = {-1, 0, 1, 2, 3}; // -1 follows island
-    constexpr int kLookCount = 5;
+    static const wchar_t* const kNames[] = {L"Astraeus", L"Dark", L"Light", L"Glass", L"Custom", L"Chrome"};
+    static const int kLooks[] = {-1, 0, 1, 2, 3, prefs::Settings::kChrome}; // -1 follows island
+    constexpr int kLookCount = 6;
     int order[kLookCount], n = 0;
     for (int i = 0; i < kLookCount; ++i)
         if (kLooks[i] != -1 || (islandHere && (!look.followsBar || cfg.look == kLooks[i]))) order[n++] = i; // without island, or with island following us, no swatch to follow it; kept while it's the pick
@@ -486,7 +489,8 @@ void Bar::SetMaterial(const Theme& t, const D2D1_RECT_F& r) { // island's materi
             }
             c.Stroke(q, 6, Color{1, 1, 1, 0.40f}, 1.2f);
         } else {
-            c.FillV(q, 6, th.cardHi, th.bg.Alpha(1)); // opaque: the swatch shows the material, not what's behind the bar
+            if (th.chrome) chrome::Metal(c, q, 6, 0, 1); // the real metal, its lights held still, under the little bars
+            else c.FillV(q, 6, th.cardHi, th.bg.Alpha(1)); // opaque: the swatch shows the material, not what's behind the bar
             c.Fill(Rect(q.left, q.top, sw, 8), 0, th.bg.Alpha(1).Mix(th.text, 0.06f)); // a little toolbar along its top
             c.Fill(Rect(q.left + sw * 0.25f, q.bottom - 14, sw * 0.5f, 8), 3, th.bg.Alpha(1).Mix(th.text, 0.12f)); // and a little dock
             if (th.stars) starfall::Sky(c, q, 6, th, 0, 1, 1, nullptr, 6); // island's starfall, a denser field to read at swatch size
@@ -650,7 +654,7 @@ void Bar::SetAdvanced(const Theme& t, const D2D1_RECT_F& head) { // island's adv
     };
     const AdvCard cards[] = {
         {L"Dock", true, {{"set.winkeys", L"Win + number opens apps", cfg.winKeys != 0}, {"set.adaptive", L"Full width over maximized", cfg.adaptive != 0}, {"set.trayapps", L"Tray apps in the dock", cfg.trayApps != 0}}, 3},
-        {L"Player", player, {{"set.hoverplay", L"Open the player on hover", cfg.hoverPlay != 0}, {"set.artbg", L"Album art background", artBg}}, 2, 2}, // shared with astraeus, its two sliders too
+        {L"Player", player, {{"set.hoverplay", L"Open the player on hover", cfg.hoverPlay != 0}, {"set.artbg", L"Album art background", artBg}, {"set.docklyrics", L"Lyrics in the dock", cfg.dockLyrics != 0}}, 3, 2}, // shared with astraeus, its two sliders too
         {L"Clipboard", clipUsed, {{"set.clipclean", L"Clean tracking from links", o2.clean != 0}, {"set.clipwipe", L"Clear clips on restart", o2.wipe != 0}, {"set.cliptitles", L"Fetch link titles online", o2.titles != 0}}, 3},
     };
     constexpr int kPlayerCard = 1;
@@ -718,6 +722,10 @@ void Bar::SetAdvanced(const Theme& t, const D2D1_RECT_F& head) { // island's adv
         bool on = !artBg;
         prefs::SaveShared(prefs::kMediaArtBg, on ? 1 : 0); // astraeus hears it and follows
         for (Bar* b : Docks()) b->SetArtBg(on); // every screen's player, without waiting on the watch
+    }
+    if (flip[1][2]) {
+        SetPref(cfg.dockLyrics, L"DockLyrics", cfg.dockLyrics ? 0 : 1);
+        for (Bar* b : Docks()) b->cfg.dockLyrics = cfg.dockLyrics, b->SyncLyrics(); // every screen now, not at the next watch
     }
     if (flip[2][0]) o2.clean ^= 1;
     if (flip[2][1]) o2.wipe ^= 1;

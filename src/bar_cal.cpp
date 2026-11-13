@@ -126,7 +126,11 @@ void Bar::CalMenu() { // what's connected, to add another or let one go
 
 void Bar::DrawAgenda(const Theme& t, const D2D1_RECT_F& r, int y, int m, int d) { // the picked day's events, or how to connect a calendar
     Canvas& c = ui.C();
-    if (!cals.Linked()) { // nothing connected yet: the empty state teaches how
+    int ymd = y * 10000 + m * 100 + d;
+    std::vector<int> due; // the to-dos dated that day, done or not: a tick here counts
+    for (int i = 0; i < (int)todos.size(); ++i)
+        if (todos[i].due == ymd) due.push_back(i);
+    if (!cals.Linked() && due.empty()) { // nothing connected yet: the empty state teaches how
         float cy = r.top + Height(r) / 2;
         if (calWaiting) {
             c.Text(L"Copy the “Secret address in iCal format”", Rect(r.left + 4, cy - 26, Width(r) - 8, 18), Weight::Medium, 12, t.text, Align::Center);
@@ -148,20 +152,42 @@ void Bar::DrawAgenda(const Theme& t, const D2D1_RECT_F& r, int y, int m, int d) 
         if (ui.RClick(btn)) PostMessageW(hwnd, WM_APP_CALMENU, 0, 0); // menus run their own loop, so not from inside the frame
         return;
     }
-    auto events = cals.Day(y, m, d);
+    auto events = cals.Linked() ? cals.Day(y, m, d) : std::vector<sys::cal::Event>{};
+    size_t total = events.size() + due.size();
     D2D1_RECT_F headR = Rect(r.left + 4, r.top, Width(r) - 66, kAgendaHead - 6);
     c.Text(DayName(y, m, d), headR, Weight::Semi, 12, t.text);
-    if (events.size() > (size_t)kAgendaRows) c.Text(L"+" + std::to_wstring(events.size() - kAgendaRows) + L" more", headR, Weight::Medium, 11, t.textDim, Align::Right);
-    if (w::IconBtn(ui, t, Ui::Id("cal.new"), {r.right - 40, r.top + 9}, 24, glyph::Add, 17)) // google's own new-event page: saved there, it's in the account and shows here on the next sync
-        ShellExecuteW(nullptr, L"open", sys::cal::Calendars::NewEventUrl(y, m, d).c_str(), nullptr, nullptr, SW_SHOWNORMAL), SetPanel(Panel::None);
-    if (w::IconBtn(ui, t, Ui::Id("cal.links"), {r.right - 12, r.top + 9}, 24, glyph::Link, 15)) PostMessageW(hwnd, WM_APP_CALMENU, 0, 0); // connect another, or remove one
+    if (total > (size_t)kAgendaRows) c.Text(L"+" + std::to_wstring(total - kAgendaRows) + L" more", headR, Weight::Medium, 11, t.textDim, Align::Right);
+    if (cals.Linked()) {
+        if (w::IconBtn(ui, t, Ui::Id("cal.new"), {r.right - 40, r.top + 9}, 24, glyph::Add, 17)) // google's own new-event page: saved there, it's in the account and shows here on the next sync
+            ShellExecuteW(nullptr, L"open", sys::cal::Calendars::NewEventUrl(y, m, d).c_str(), nullptr, nullptr, SW_SHOWNORMAL), SetPanel(Panel::None);
+        if (w::IconBtn(ui, t, Ui::Id("cal.links"), {r.right - 12, r.top + 9}, 24, glyph::Link, 15)) PostMessageW(hwnd, WM_APP_CALMENU, 0, 0); // connect another, or remove one
+    } else { // only to-dos here: connecting stays one click away
+        D2D1_RECT_F link = Rect(r.right - 130, r.top, 126, kAgendaHead - 6);
+        Ui::Hit h = ui.Button(Ui::Id("cal.connect.small"), link);
+        c.Text(L"Connect a calendar", link, Weight::Medium, 11, h.hover ? t.accentHi : t.textDim, Align::Right);
+        if (h.clicked) StartCalWait(true);
+    }
     float ry = r.top + kAgendaHead;
-    if (events.empty()) {
+    if (total == 0) {
         c.Text(cals.Busy() ? L"Syncing…" : L"Nothing on", Rect(r.left + 4, ry, Width(r) - 8, kAgendaRow), Weight::Regular, 12, t.textDim);
         return;
     }
+    size_t rows = 0;
+    for (int i : due) { // the day's to-dos, a box to tick each
+        if (rows++ >= (size_t)kAgendaRows) break;
+        Todo& todo = todos[i];
+        D2D1_RECT_F rowR = Rect(r.left, ry, Width(r), kAgendaRow);
+        Ui::Hit h = ui.Button(Ui::Id("cal.todo", i), rowR);
+        D2D1_POINT_2F o = {r.left + 12, ry + kAgendaRow / 2};
+        c.Ring(o, 6, todo.done ? t.accent : t.textDim.Mix(t.text, h.hover ? 0.6f : 0.0f), 1.5f);
+        if (todo.done) c.Dot(o, 3.8f, t.accent);
+        c.Text(todo.text, Rect(r.left + 12 + kTimeW, ry, Width(r) - 16 - kTimeW, kAgendaRow), Weight::Medium, 12, todo.done ? t.textLow : t.text);
+        c.Text(L"To-do", Rect(r.left + 24, ry, kTimeW - 12, kAgendaRow), Weight::Medium, 11.5f, t.textDim);
+        if (h.clicked) todo.done = !todo.done, SaveLists(), Redraw();
+        ry += kAgendaRow;
+    }
     const wchar_t* fmt = cfg.clock24 == 1 ? L"HH:mm" : cfg.clock24 == 0 ? L"h:mm tt" : nullptr; // as the bar's own clock
-    for (size_t i = 0; i < events.size() && i < (size_t)kAgendaRows; ++i, ry += kAgendaRow) {
+    for (size_t i = 0; i < events.size() && rows < (size_t)kAgendaRows; ++i, ++rows, ry += kAgendaRow) {
         const auto& e = events[i];
         std::wstring when = L"All day";
         if (!e.allDay) {

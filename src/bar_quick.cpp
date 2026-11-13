@@ -710,7 +710,7 @@ void Bar::DrawCalendar(const Theme& t, ID2D1Geometry* shape) {
         if (picked && today) c.Ring(o, 16, t.accentHi, 1.5f);
         c.Text(std::to_wstring(d), {o.x - cw / 2, o.y - 9, o.x + cw / 2, o.y + 9}, today ? Weight::Semi : Weight::Regular, 12.5f, today ? t.onAccent : t.text,
                Align::Center);
-        if (cals.HasEvents(calYear, calMonth, d)) c.Dot({o.x, o.y + 11}, 1.8f, today ? t.onAccent : t.accentHi); // something on that day
+        if (cals.HasEvents(calYear, calMonth, d) || TodoDueOn(calYear, calMonth, d)) c.Dot({o.x, o.y + 11}, 1.8f, today ? t.onAccent : t.accentHi); // something on that day, or a to-do due
     }
     float ay = y + 6 * kCalCell + 4;
     c.Line({r.left, ay}, {r.right, ay}, t.line, 1);

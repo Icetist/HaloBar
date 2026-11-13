@@ -35,6 +35,148 @@ constexpr float kSplitW = 200; // over apps in the editor: their own widgets or 
 
 }
 
+namespace {
+
+constexpr float kGripW = 20, kChipW = 64, kLift = 6; // the drag handle, the date chip; how far a held row may float past the list
+const Color kLate{0.96f, 0.38f, 0.38f, 1}; // a date that has passed
+
+SYSTEMTIME YmdDay(int ymd) {
+    SYSTEMTIME st{};
+    st.wYear = (WORD)(ymd / 10000), st.wMonth = (WORD)(ymd / 100 % 100), st.wDay = (WORD)(ymd % 100);
+    return st;
+}
+
+std::wstring DueText(int due, int today) { // today and tomorrow by name, this week by day, further by date, as astraeus says it
+    if (due == today) return L"Today";
+    if (due == WgDayShift(today, 1)) return L"Tomorrow";
+    if (due == WgDayShift(today, -1)) return L"Yesterday";
+    SYSTEMTIME st = YmdDay(due);
+    bool soon = due > today && due <= WgDayShift(today, 6);
+    wchar_t buf[32] = L"";
+    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, soon ? L"ddd d" : L"d MMM", buf, 32, nullptr);
+    return buf;
+}
+
+std::wstring WeekDay(int ymd) {
+    SYSTEMTIME st = YmdDay(ymd);
+    wchar_t buf[16] = L"";
+    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"ddd", buf, 16, nullptr);
+    return buf;
+}
+
+void GripDots(Canvas& c, D2D1_POINT_2F o, Color ink) { // two columns of three dots: it can be picked up
+    for (int col = 0; col < 2; ++col)
+        for (int row = 0; row < 3; ++row) c.Dot({o.x - 2.5f + col * 5, o.y - 5 + row * 5.0f}, 1.2f, ink);
+}
+
+}
+
+bool Bar::TodoDueOn(int y, int m, int d) const {
+    int ymd = y * 10000 + m * 100 + d;
+    return std::any_of(todos.begin(), todos.end(), [ymd](const Todo& x) { return !x.done && x.due == ymd; });
+}
+
+void Bar::DrawTodos(const Theme& t, const D2D1_RECT_F& r) {
+    Canvas& c = ui.C();
+    int n = (std::min)((int)todos.size(), kListRows - 1);
+    if (todoPick >= n) todoPick = -1;
+    if (todoHeld >= n) todoHeld = -1;
+    int today = WgToday();
+    float top = r.top + kHead;
+    std::vector<int> order(n);
+    for (int i = 0; i < n; ++i) order[i] = i;
+    const std::vector<int> asIs = order;
+    if (todoHeld >= 0) { // the rest make room where it would land
+        int slot = (std::clamp)((int)std::lround((input.mouse.y - todoHeldDy - top) / kRow), 0, n - 1);
+        order.erase(std::find(order.begin(), order.end(), todoHeld));
+        order.insert(order.begin() + slot, todoHeld);
+    }
+    int flip = -1, drop = -1;
+    auto drawRow = [&](int idx, D2D1_RECT_F rr, bool lifted) {
+        Todo& todo = todos[idx];
+        float cy = (rr.top + rr.bottom) / 2;
+        bool hot = lifted || (todoHeld < 0 && Inside(rr, input.mouse));
+        float hov = ui.Smooth(Ui::Id("wg.todo.hov", idx), hot ? 1.0f : 0, 16);
+        if (lifted) c.Fill(Inset(rr, -2, 0), 10, t.cardHi), c.Stroke(Inset(rr, -2, 0), 10, t.hairTop, 1);
+        else if (hov > 0.01f) c.Fill(rr, 10, t.text.Alpha(0.07f * hov));
+        uint32_t gid = Ui::Id("wg.todo.grip", idx);
+        Ui::Hit g = lifted ? Ui::Hit{} : ui.Button(gid, {rr.left, rr.top, rr.left + kGripW, rr.bottom});
+        GripDots(c, {rr.left + kGripW / 2 + 2, cy}, t.textLow.Mix(t.text, g.hover || lifted ? 0.8f : 0.0f).Alpha(0.3f + 0.7f * hov));
+        if (todoHeld < 0 && ui.IsActive(gid) && input.down && std::hypot(input.mouse.x - input.pressPos.x, input.mouse.y - input.pressPos.y) > 4) // picked up
+            todoHeld = idx, todoHeldDy = input.pressPos.y - rr.top, todoPick = -1;
+        float chipX = rr.right - 6 - kChipW;
+        D2D1_POINT_2F o = {rr.left + kGripW + 12, cy};
+        D2D1_RECT_F words = {rr.left + kGripW + 26, rr.top, chipX - 6, rr.bottom};
+        if (!lifted) {
+            Ui::Hit h = ui.Button(Ui::Id("wg.todo", idx), {rr.left + kGripW, rr.top, chipX - 4, rr.bottom});
+            if (h.clicked && todoHeld < 0) flip = idx;
+            if (input.rclick && Inside(rr, input.mouse)) drop = idx;
+        }
+        c.Ring(o, 7, todo.done ? t.accent : t.textDim, 1.5f);
+        if (todo.done) c.Dot(o, 4.5f, t.accent);
+        c.Text(todo.text, words, Weight::Regular, 12.5f, todo.done ? t.textLow : t.text);
+        if (todo.done) c.Line({words.left, cy}, {(std::min)(words.right, words.left + TextW(todo.text, Weight::Regular, 12.5f)), cy}, t.textLow, 1);
+        D2D1_RECT_F chip = Rect(chipX, cy - 10, kChipW, 20);
+        if (todo.due) { // the date, red once it's passed
+            Ui::Hit h = lifted ? Ui::Hit{} : ui.Button(Ui::Id("wg.todo.due", idx), chip);
+            Color ink = todo.due < today && !todo.done ? kLate : todo.done ? t.textLow : t.accentHi;
+            c.Fill(chip, 10, ink.Alpha(h.hover || todoPick == idx ? 0.22f : 0.12f));
+            c.Text(DueText(todo.due, today), chip, Weight::Medium, 10.5f, ink, Align::Center);
+            if (h.clicked) todoPick = todoPick == idx ? -1 : idx;
+        } else if (!lifted && (hov > 0.01f || todoPick == idx)) { // no date yet: a calendar to give it one
+            if (w::IconBtn(ui, t, Ui::Id("wg.todo.cal", idx), {chip.right - 12, cy}, 22, glyph::Calendar, 14)) todoPick = todoPick == idx ? -1 : idx;
+        }
+    };
+    float y = top;
+    for (int idx : order) {
+        D2D1_RECT_F rr = Rect(r.left - 6, y, Width(r) + 12, kRow - 2);
+        if (idx != todoHeld) drawRow(idx, rr, false);
+        y += kRow;
+        if (idx != todoPick || todoHeld >= 0) continue;
+        Todo& todo = todos[idx]; // the date picker, under its row
+        float x = r.left + kGripW + 20;
+        auto pick = [&](int k, const std::wstring& label, int due) {
+            float w = TextW(label, Weight::Medium, 11) + 18;
+            if (x + w > r.right + 6) return; // what doesn't fit on the panel is left off
+            D2D1_RECT_F q = Rect(x, y + 3, w, kRow - 8);
+            Ui::Hit h = ui.Button(Ui::Id("wg.todo.pick", k), q);
+            bool on = due != 0 && todo.due == due;
+            c.Fill(q, Height(q) / 2, on ? t.accent.Alpha(0.3f) : t.text.Alpha(h.hover ? 0.12f : 0.06f));
+            c.Text(label, q, Weight::Medium, 11, on || h.hover ? t.text : t.textDim, Align::Center);
+            if (h.clicked) todo.due = due, todoPick = -1, SaveLists(), Redraw();
+            x += w + 5;
+        };
+        pick(0, L"Today", today);
+        pick(1, L"Tomorrow", WgDayShift(today, 1));
+        if (todo.due) pick(8, L"Clear", 0); // early, so the narrow panel never leaves it off
+        for (int d = 2; d <= 6; ++d) pick(d, WeekDay(WgDayShift(today, d)), WgDayShift(today, d));
+        pick(7, L"Next week", WgDayShift(today, 7));
+        y += kRow;
+    }
+    if (todoHeld >= 0) { // the held one floats under the mouse
+        float hy = (std::clamp)(input.mouse.y - todoHeldDy, top - kLift, top + (n - 1) * kRow + kLift);
+        drawRow(todoHeld, Rect(r.left - 6, hy, Width(r) + 12, kRow - 2), true);
+        ui.Button(Ui::Id("wg.todo.grip", todoHeld), Rect(r.left - 6, hy, kGripW, kRow - 2)); // the press stays with it
+        if (!input.down) { // let go: the list takes the new order
+            if (order != asIs) {
+                std::vector<Todo> next;
+                for (int idx : order) next.push_back(todos[idx]);
+                for (size_t i = (size_t)n; i < todos.size(); ++i) next.push_back(todos[i]); // any past what the panel shows keep their place
+                todos = std::move(next);
+                SaveLists();
+            }
+            todoHeld = -1;
+        }
+        ui.KeepAlive();
+    }
+    if (flip >= 0) todos[flip].done = !todos[flip].done, SaveLists(), Redraw();
+    if (drop >= 0) {
+        todos.erase(todos.begin() + drop), SaveLists(), Redraw();
+        if (todoPick == drop) todoPick = -1;
+        else if (todoPick > drop) --todoPick;
+    }
+}
+
 float Bar::WidgetPanelW() const { return wgKind == kWgGallery ? kGalleryW : wgKind == kWgClip ? ClipW() : kWgW; }
 
 float Bar::WidgetRise() const {
@@ -49,7 +191,7 @@ float Bar::WidgetRise() const {
     case kWgFiles:
     case kWgFolder: return kHead + 14 + (float)(std::max)(1, ((int)files.size() + kFileCols - 1) / kFileCols) * kFileRowH + 20;
     case kWgNotes: return 240;
-    case kWgTodo: return list(todos.size() + 1);
+    case kWgTodo: return list(todos.size() + 1) + (todoPick >= 0 ? kRow : 0); // the date picker opens a row under its to-do
     case kWgHabit: return list(habits.size() + 1);
     case kWgCalendar: {
         SYSTEMTIME st;
@@ -275,22 +417,9 @@ void Bar::DrawWidgetPanel(const Theme& t, ID2D1Geometry* shape) {
     }
     case kWgTodo: {
         head(L"TO-DO");
-        float y = r.top + kHead;
-        int flip = -1, drop = -1;
-        for (size_t i = 0; i < todos.size() && i < (size_t)kListRows - 1; ++i, y += kRow) {
-            auto [rr, h] = row(Ui::Id("wg.todo", (int)i), y);
-            D2D1_POINT_2F o = {rr.left + 16, (rr.top + rr.bottom) / 2};
-            c.Ring(o, 7, todos[i].done ? t.accent : t.textDim, 1.5f);
-            if (todos[i].done) c.Dot(o, 4.5f, t.accent);
-            c.Text(todos[i].text, Rect(rr.left + 32, rr.top, Width(rr) - 40, Height(rr)), Weight::Regular, 12.5f, todos[i].done ? t.textLow : t.text);
-            if (todos[i].done) c.Line({rr.left + 32, o.y}, {(std::min)(rr.right - 8, rr.left + 32 + TextW(todos[i].text, Weight::Regular, 12.5f)), o.y}, t.textLow, 1);
-            if (h.clicked) flip = (int)i;
-            if (input.rclick && Inside(rr, input.mouse)) drop = (int)i;
-        }
-        field(y + 4, L"Type a to-do and press Enter");
-        c.Text(L"Click to tick  ·  right click to delete", Rect(r.left, r.bottom - 16, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
-        if (flip >= 0) todos[flip].done = !todos[flip].done, SaveLists(), Redraw();
-        if (drop >= 0) todos.erase(todos.begin() + drop), SaveLists(), Redraw();
+        DrawTodos(t, r); // drag by the grip, tick, date, delete
+        field(r.top + kHead + (float)(std::min)((int)todos.size(), kListRows - 1) * kRow + (todoPick >= 0 ? kRow : 0) + 4, L"Type a to-do and press Enter");
+        c.Text(L"Drag to reorder  ·  right click to delete", Rect(r.left, r.bottom - 16, Width(r), 14), Weight::Regular, 10.5f, t.textLow, Align::Center);
         closeOnRight = false;
         break;
     }
@@ -549,7 +678,9 @@ void Bar::DrawGallery(const Theme& t, const D2D1_RECT_F& r) {
         D2D1_RECT_F pv = Rect((card.left + card.right) / 2 - pw / 2, card.top + 10, pw, kIcon);
         c.Fill(pv, TileRadius(), t.bg.Alpha(1).Mix(t.text, 0.04f)); // a sliver of dock under it
         c.PushClip(pv);
-        DrawWg(t, k, size, pv, false); // its real face, live data and all
+        faces::Sampling(!HasWg(k)); // not in the dock, nothing's fetched for it: made-up numbers rather than "Fetching…" forever
+        DrawWg(t, k, size, pv, false); // its real face; live data once it's in
+        faces::Sampling(false);
         c.PopClip();
         c.Text(m.name, Rect(card.left + 12, pv.bottom + 8, Width(card) - 40, 16), Weight::Semi, 12, t.text);
         c.Text(m.about, Rect(card.left + 12, pv.bottom + 25, Width(card) - 20, 14), Weight::Regular, 10, t.textDim);

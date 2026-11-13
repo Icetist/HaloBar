@@ -6,6 +6,7 @@ constexpr int Music = 0xE405;
 constexpr int System = 0xF190;
 constexpr int Network = 0xE63E;
 constexpr int Tools = 0xF10B;
+constexpr int Leaderboard = 0xF20C; // the scores widget's icon: a podium. the trophy isn't in this font's subset
 constexpr int Play = 0xE037, Pause = 0xE034, Next = 0xE044, Prev = 0xE045; // media transport
 constexpr int Shuffle = 0xE043, Repeat = 0xE040, RepeatOne = 0xE041;
 constexpr int Wifi = 0xE63E, WifiOff = 0xE648, Bluetooth = 0xE1A7, BluetoothOff = 0xE1A9;

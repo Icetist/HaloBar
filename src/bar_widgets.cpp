@@ -242,7 +242,13 @@ void Bar::SyncWidgets() {
         for (size_t i = 0; i < t.size();) {
             size_t e = t.find(L'\n', i);
             std::wstring line = t.substr(i, e == std::wstring::npos ? std::wstring::npos : e - i);
-            if (line.size() > 2 && line[1] == L'\t') todos.push_back({line.substr(2), line[0] == L'1'});
+            if (line.size() > 2 && line[1] == L'\t') { // "1\ttext", then a tab and yyyymmdd when it's due (typing can't make a tab)
+                std::wstring text = line.substr(2);
+                int due = 0;
+                size_t tab = text.rfind(L'\t');
+                if (tab != std::wstring::npos && text.size() - tab == 9) due = _wtoi(text.c_str() + tab + 1), text.resize(tab);
+                todos.push_back({text, line[0] == L'1', due > 19000101 ? due : 0});
+            }
             if (e == std::wstring::npos) break;
             i = e + 1;
         }
@@ -291,6 +297,7 @@ faces::Host Bar::FaceHost() {
     h.progress = hasTrack ? track.Progress() : 0;
     h.bright = brightPct;
     h.ctx = this;
+    h.resync = [](void* self) { static_cast<Bar*>(self)->SyncFaces(); }; // new leagues followed, or a game opened: fetched from now, not at the next refresh
     h.setBright = [](void* self, int percent) {
         Bar* b = static_cast<Bar*>(self);
         b->bright.Set(percent);
@@ -478,7 +485,7 @@ void Bar::SaveNote() { WriteUtf8(LocalFile(L"notes.txt"), note); }
 
 void Bar::SaveLists() {
     std::wstring t, h;
-    for (const Todo& d : todos) t += (d.done ? L"1\t" : L"0\t") + d.text + L"\n";
+    for (const Todo& d : todos) t += (d.done ? L"1\t" : L"0\t") + d.text + (d.due ? L"\t" + std::to_wstring(d.due) : L"") + L"\n";
     for (const Habit& b : habits) h += b.name + L"\t" + std::to_wstring(b.last) + L"\t" + std::to_wstring(b.streak) + L"\n";
     WriteUtf8(LocalFile(L"todos.txt"), t);
     WriteUtf8(LocalFile(L"habits.txt"), h);

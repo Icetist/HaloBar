@@ -51,6 +51,45 @@ void WaveLine(Canvas& c, float a0, float a1, float cy, float amp, double now, Co
 
 }
 
+namespace {
+constexpr double kLyricLead = 0.015; // wake just past a line's edge, never just before it
+constexpr double kLyricMaxWait = 60; // seconds: a long gap still checks back
+sys::LyricSrc& Lyrics() { // one lookup for every screen's dock
+    static sys::LyricSrc src;
+    return src;
+}
+}
+
+void Bar::SyncLyrics() {
+    KillTimer(hwnd, kLyricTimer);
+    int line = -1;
+    std::wstring words;
+    bool want = cfg.dockLyrics && cfg.song && hasTrack && track.music && !track.title.empty();
+    if (!want) lyrKey.clear();
+    if (want) {
+        std::wstring key = sys::LyricSrc::Key(track.title, track.artist);
+        if (key != lyrKey) lyrKey = key, Lyrics().Want(track.title, track.artist, track.album, track.duration / 1e7);
+        auto ly = Lyrics().Get(key);
+        if (!ly || !ly->done) {
+            SetTimer(hwnd, kLyricTimer, kLyricPollMs, nullptr); // still being looked up
+        } else if (!ly->lines.empty()) {
+            double at = track.Elapsed() / 1e7 + ly->offsetMs / 1000.0, next = -1;
+            for (size_t i = 0; i < ly->lines.size(); ++i) {
+                const sys::LyricLine& l = ly->lines[i];
+                if (at >= l.start && at < l.end) { line = (int)i, words = l.text, next = l.end; break; }
+                if (l.start > at) { next = l.start; break; }
+            }
+            if (track.playing && next > at) SetTimer(hwnd, kLyricTimer, (UINT)((std::min)(next - at + kLyricLead, kLyricMaxWait) * 1000), nullptr);
+        }
+    }
+    if (line == lyrLine) return;
+    lyrLine = line;
+    lyrPrev = lyrText;
+    lyrText = words;
+    lyrSwap = ui.Now();
+    Redraw();
+}
+
 void Bar::OnMedia() {
     sys::Track t;
     bool has = Player().Snapshot(t);
@@ -60,6 +99,7 @@ void Bar::OnMedia() {
     if (started) Peaks().Refresh(); // follow whichever output it's playing on now
     if (!hasTrack && mediaOpen) SetMediaOpen(false);
     if (card.Shown()) ShowPreview(); // a card with the transport on it shows play or pause as it is now
+    SyncLyrics(); // a new song, a seek or a pause: the sung line and its timer follow
     Redraw();
     if (!lead)
         for (Bar* b : Docks())

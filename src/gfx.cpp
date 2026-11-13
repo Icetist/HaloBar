@@ -511,6 +511,14 @@ float Canvas::TextOnce(const std::wstring& s, const D2D1_RECT_F& r, Weight w, fl
     return SUCCEEDED(l->GetMetrics(&tm)) ? tm.widthIncludingTrailingWhitespace : 0;
 }
 
+float Canvas::Measure(const std::wstring& s, Weight w, float size) { // as island's
+    constexpr float kRoom = 4000; // wide enough that nothing trims
+    IDWriteTextFormat* f = s.empty() ? nullptr : gfx::TextFmt(w, size, Align::Left);
+    IDWriteTextLayout* l = f ? Layout(s, f, kRoom, size * 2, 0) : nullptr;
+    DWRITE_TEXT_METRICS tm{};
+    return l && SUCCEEDED(l->GetMetrics(&tm)) ? tm.widthIncludingTrailingWhitespace : 0;
+}
+
 void Canvas::TextSp(const std::wstring& s, const D2D1_RECT_F& r, Weight w, float size, Color c, float spacing, Align a) {
     if (s.empty()) return;
     if (listening) Say(s, 0, r);

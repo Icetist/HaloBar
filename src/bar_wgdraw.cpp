@@ -154,7 +154,12 @@ std::wstring Bar::WgTip(int kind) const {
 void Bar::DrawWg(const Theme& t, int kind, int size, const D2D1_RECT_F& r, bool live) {
     Canvas& c = ui.C();
     if (size < 0 || size > 2 || !(wg::Info(kind).sizes & (1 << size))) size = 0; // a space carries its width here, not a face size
-    if (IsFace(kind)) return faces::Draw(c, t, kind - kWgFaces, size, r, faceHost);
+    if (IsFace(kind)) {
+        int face = kind - kWgFaces;
+        if (live && faces::Wheel(face, 0)) // the scores: the wheel goes through its games
+            if (float n = ui.Wheel(r); n != 0) faces::Wheel(face, n), Redraw();
+        return faces::Draw(c, t, face, size, r, faceHost);
+    }
     float cx = (r.left + r.right) / 2, mid = (r.top + r.bottom) / 2;
     bool tiny = size == 0, large = size == 2;
     double now = (double)GetTickCount64() / 1000;

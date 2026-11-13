@@ -20,7 +20,8 @@ struct Look { // astraeus island's appearance, so the two read as one desktop
 struct Settings { // the bar's own choices; "follow" means whatever island uses
     static constexpr int kFollow = -1;
     static constexpr int kClear = 6; // the bar's own: past astraeus' numbers, which it reads as following us
-    int look = kFollow; // the astraeus theme's material: kFollow, or 0 dark, 1 light, 2 glass, 3 custom, kClear
+    static constexpr int kChrome = 7; // polished metal, numbered as astraeus numbers it: either can follow the other into it
+    int look = kFollow; // the astraeus theme's material: kFollow, or 0 dark, 1 light, 2 glass, 3 custom, kClear, kChrome
     struct ThemeSet { int look, accent, accentHex, customBg, blur, opacity, glassTint; };
     int appsTheme = 0; // a whole theme of its own while a window is maximized on its screen
     ThemeSet otherSet{}; // the theme not in the live fields: every reader keeps reading those, so nothing can be missed
@@ -48,6 +49,7 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     int align = 0; // 0 the dock in the middle, sized to what's in it; 1 across the screen, apps from the left and the status at the right end; 2 the same, mirrored
     int screens = 1; // 0 the dock on one screen, the one picked or the main one; 1 a dock on every screen, as windows' own taskbar
     int hoverPlay = 0; // resting on the song opens the player; off: a click does
+    int dockLyrics = 0; // while a line is sung it takes the song's place in the dock, as on astraeus' long pill; off by default
     int date = 1; // the date under the time
     int dockFloat = 1; // 1 the dock floats off the screen's edge, 0 it's stuck to it
     enum { kBodyTheme, kBodyAccent, kBodyClear };

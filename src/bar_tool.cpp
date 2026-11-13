@@ -11,6 +11,7 @@
 #include <cwctype>
 
 #include "glyphs.h"
+#include "chrome.h"
 #include "starfall.h"
 #include "overflow.h"
 #include "popmenu.h"
@@ -48,6 +49,7 @@ void Bar::PaintPlate(const D2D1_RECT_F& r, float radius, const Theme& t, float s
     float fr = flat ? 0 : radius;
     c.Fill(r, fr, Body(t)); // the solid looks at the opacity setting
     if (t.stars) starfall::Sky(c, r, radius, t, skyT, Body(t).a, 1, nullptr, 1, skyDrift); // island's starfall; its orb moves only while this bar is hovered
+    else if (t.chrome) chrome::Metal(c, r, radius, skyDrift ? skyT : 0, Body(t).a); // chrome; its lights move only while this bar is hovered
     if (t.glass) {
         if (shade > 0.01f) c.Fill(r, fr, Tint(shade)); // smoked over a white page, or frosted over a dark one: the ink still reads
         c.FillV(r, fr, t.sheen, t.sheen.Alpha(0));
@@ -390,6 +392,7 @@ void Bar::DrawToolbar(const Theme& t) {
     capL = barR;
     if (!Clear()) c.Fill(barR, 0, Body(t)); // edge to edge, in island's material
     if (t.stars) starfall::Sky(c, barR, 0, t, skyT, Body(t).a, 0, nullptr, 1, skyDrift);
+    else if (t.chrome) chrome::Metal(c, barR, 0, skyDrift ? skyT : 0, Body(t).a);
     if (t.glass) {
         if (shadeTopNow > 0.01f) c.Fill(barR, 0, Tint(shadeTopNow));
         c.FillV(barR, 0, t.sheen, t.sheen.Alpha(0));
@@ -717,8 +720,21 @@ void Bar::DrawMediaTile(const Theme& t, bool live) { // the song as astraeus' pi
         barsRect = Rect(r.right - 14 - 22, cy - 7, 22, 14);
         float tx = art.right + 8, tw = barsRect.left - 6 - tx;
         bool two = !track.artist.empty();
-        c.Text(track.title, Rect(tx, two ? cy - 14 : cy - 8, tw, 16), Weight::Medium, 12, t.text);
-        if (two) c.Text(track.artist, Rect(tx, cy + 1, tw, 14), Weight::Light, 10.5f, t.textDim);
+        constexpr double kLyricFade = 0.25; // seconds for a line to rise in and the last to rise out
+        constexpr float kLyricRise = 6;
+        float in = (float)(std::min)(1.0, (ui.Now() - lyrSwap) / kLyricFade), out = 1 - in;
+        if (in < 1) ui.KeepAlive();
+        auto songWords = [&](float a, float dy) { // the title over the artist
+            c.Text(track.title, Rect(tx, (two ? cy - 14 : cy - 8) + dy, tw, 16), Weight::Medium, 12, t.text.Alpha(t.text.a * a));
+            if (two) c.Text(track.artist, Rect(tx, cy + 1 + dy, tw, 14), Weight::Light, 10.5f, t.textDim.Alpha(t.textDim.a * a));
+        };
+        auto sungWords = [&](const std::wstring& s, float a, float dy) { c.Text(s, Rect(tx, cy - 8 + dy, tw, 16), Weight::Medium, 12, t.text.Alpha(t.text.a * a)); };
+        if (out > 0.01f) { // what was showing rises away
+            if (lyrPrev.empty()) songWords(out, -kLyricRise * in);
+            else sungWords(lyrPrev, out, -kLyricRise * in);
+        }
+        if (lyrText.empty()) songWords(in, kLyricRise * out); // between lines the song comes back
+        else sungWords(lyrText, in, kLyricRise * out);
         if (play) {
             c.Fill(pb, 13, mt.accent.Alpha(bh.hover ? 0.9f : 0.7f));
             c.Icon(track.playing ? glyph::Pause : glyph::Play, po, 16, mt.onAccent, true);

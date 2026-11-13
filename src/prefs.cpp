@@ -61,7 +61,7 @@ Look IslandLook(bool notOnDesktop) {
     l.look = theme(L"Appearance", 0);
     l.followsBar = l.look == 4;
     if (!l.followsBar) l.bgOpacity = (std::clamp)(theme(L"BgOpacity", 100), Settings::kMinOpacity, 100); // clamped as island clamps it; 4 follows the bar back: the default ends the loop
-    if (l.look < 0 || (l.look > 3 && l.look != kIslandStarfall && l.look != Settings::kClear)) l.look = 0; // a look this build doesn't know, or 4 (following us): the default one
+    if (l.look < 0 || (l.look > 3 && l.look != kIslandStarfall && l.look != Settings::kClear && l.look != Settings::kChrome)) l.look = 0; // a look this build doesn't know, or 4 (following us): the default one
     l.accentFixed = theme(L"AccentMode", 0) == 1;
     l.accentHex = theme(L"AccentHex", l.accentHex) & 0xFFFFFF; // rgb only, any stray alpha byte dropped
     l.customBg = theme(L"CustomBg", l.customBg) & 0xFFFFFF;
@@ -84,7 +84,8 @@ Settings Load() {
         int v = Read(kBarKey, name, fallback);
         return v < lo || v > hi ? fallback : v;
     };
-    s.look = Read(kBarKey, L"Look", s.look) == Settings::kClear ? Settings::kClear : num(L"Look", s.look, -1, 3); // -1 follows island
+    auto lookNum = [&](const wchar_t* name, int fallback) { int v = Read(kBarKey, name, fallback); return v == Settings::kClear || v == Settings::kChrome ? v : num(name, fallback, -1, 3); }; // clear and chrome sit past the plain range
+    s.look = lookNum(L"Look", s.look); // -1 follows island
     s.blur = num(L"GlassBlur", s.blur, 0, 100);
     s.glassTint = num(L"GlassTint", s.glassTint, -1, 0xFFFFFF);
     s.opacity = num(L"Opacity", s.opacity, Settings::kMinOpacity, 100);
@@ -92,7 +93,7 @@ Settings Load() {
     s.accentHex = Read(kBarKey, L"AccentHex", s.accentHex) & 0xFFFFFF;
     s.customBg = Read(kBarKey, L"CustomBg", s.customBg) & 0xFFFFFF;
     s.appsTheme = num(L"AppsTheme", 0, 0, 1);
-    s.otherSet = {Read(kBarKey, L"LookApps", s.look) == Settings::kClear ? Settings::kClear : num(L"LookApps", s.look, -1, 3), num(L"AccentApps", s.accent, -1, 1), Read(kBarKey, L"AccentHexApps", s.accentHex) & 0xFFFFFF,
+    s.otherSet = {lookNum(L"LookApps", s.look), num(L"AccentApps", s.accent, -1, 1), Read(kBarKey, L"AccentHexApps", s.accentHex) & 0xFFFFFF,
                   Read(kBarKey, L"CustomBgApps", s.customBg) & 0xFFFFFF, num(L"GlassBlurApps", s.blur, 0, 100), num(L"OpacityApps", s.opacity, Settings::kMinOpacity, 100), num(L"GlassTintApps", s.glassTint, -1, 0xFFFFFF)}; // never set: the desktop's
     int sized = Read(kBarKey, L"Size", -1); // the old three sizes carry over until the dock is first dragged to one of its own
     s.zoom = num(L"Zoom", sized == 1 ? 100 : sized == 2 ? 112 : Settings::kZoomDef, Settings::kZoomMin, Settings::kZoomMax);
@@ -115,6 +116,7 @@ Settings Load() {
     s.trayApps = num(L"TrayApps", s.trayApps, 0, 1);
     s.startIcon = num(L"StartIcon", s.startIcon, 0, 1); // the old sparkle face reads as halobar's
     s.hoverPlay = num(L"HoverPlay", s.hoverPlay, 0, 1);
+    s.dockLyrics = num(L"DockLyrics", s.dockLyrics, 0, 1);
     s.date = num(L"Date", s.date, 0, 1);
     s.dockFloat = num(L"DockFloat", s.dockFloat, 0, 1);
     s.dockBody = num(L"DockBody", s.dockBody, Settings::kBodyTheme, Settings::kBodyClear);

@@ -22,6 +22,8 @@
 #include "popmenu.h"
 #include "rest.h"
 #include "setui.h"
+#include "chrome.h"
+#include "hints.h"
 #include "starfall.h"
 #include "taskbar.h"
 #include "version.h"
@@ -137,7 +139,7 @@ Bar::Bar() {
 
 Bar::~Bar() {
     if (hwnd) {
-        for (UINT_PTR t : {kClockTimer, kRescanTimer, kHoverTimer, kCloseTimer, kIdleTimer, kDevTimer, kStatusTimer, kReserveTimer, kPreviewTimer, kPreviewHideTimer, kCoverTimer, kThemeTimer, kPeekTimer}) KillTimer(hwnd, t);
+        for (UINT_PTR t : {kClockTimer, kRescanTimer, kHoverTimer, kCloseTimer, kIdleTimer, kDevTimer, kStatusTimer, kReserveTimer, kPreviewTimer, kPreviewHideTimer, kCoverTimer, kThemeTimer, kPeekTimer, kCoverPollTimer}) KillTimer(hwnd, t);
         Unreserve();
     }
     if (shelf) DestroyWindow(shelf), shelf = nullptr;
@@ -621,8 +623,10 @@ void CALLBACK Bar::OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG 
         if (b->hwnd) SetTimer(b->hwnd, kCoverTimer, kCoverMs, nullptr); // a burst of moves, one check per dock
 }
 
-void Bar::CheckCovered() {
-    KeepOnTop(); // the app that just came to the front may have been lifted over us
+void Bar::CheckCovered(bool lift) {
+    if (lift) KeepOnTop(); // the app that just came to the front may have been lifted over us
+    if (AutoHide() && !full) SetCoalescableTimer(hwnd, kCoverPollTimer, kCoverPollMs, nullptr, kCoverPollSlackMs); // each look puts the slow one off: it only runs when events went quiet
+    else KillTimer(hwnd, kCoverPollTimer);
     bool was = covered, wasTop = topCovered;
     covered = topCovered = false;
     if (TopAuto() && tasks) {
@@ -1049,6 +1053,7 @@ void Bar::FreeDev() {
     for (Ghost& gh : ghosts) gh.bmp.Reset(); // bitmaps belong to the old device: remade from their pixels on the new one
     setui::FreeWheel();
     starfall::Forget(); // the sky's gradients belong to the old device
+    chrome::Forget(); // and the metal's
     clip::History().DropPixels(); // the clipboard panel's previews and coloured text belong to the old device
     clipLays.clear(), clipInks.clear(), clipPeekLay.Reset(), clipPeekBmp.Reset(), clipPeekId = clipPeekImg = 0;
     customBmps.clear();
@@ -1674,10 +1679,16 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(hwnd, kShadeTimer);
             SampleShade();
             break;
+        case kLyricTimer:
+            SyncLyrics();
+            break;
         case kTourTimer:
             if (tourStep >= 0) break;
             if (full || AnyOpen() || editing) SetTimer(hwnd, kTourTimer, kTourDelayMs, nullptr); // a game or a panel up: a little later
             else TourStart();
+            break;
+        case kCoverPollTimer:
+            CheckCovered(false); // no climbing on a timer: z-order moves only answer real events
             break;
         case kPeekTimer:
             peek = topPeek = false;
@@ -2086,6 +2097,7 @@ void Bar::DrawCard(const Theme& t, ID2D1Geometry* shape) { // the open dropdown,
     DrawWidgetPanel(t, shape);
     DrawCalling(t, shape);
     DrawPeek(t, shape);
+    hints::Draw(ui, t, pill); // last, over whichever panel holds the hovered switch
     ui.Shift({-cardOff.x, -cardOff.y});
     input.mouse = m, input.pressPos = p;
     ctx->SetTransform(was);
@@ -2108,7 +2120,7 @@ void Bar::Frame() {
     bool themes = StepTheme(dt);
     bool springs = StepSprings(dt);
     bool easing = Layout(dt); // the toolbar's, the dock's and a dropdown's bounds for this frame, known before anything is drawn
-    skyDrift = shellNow.stars && !look.reduceMotion; // starfall's orb: frozen where it is unless a bar is hovered or a dropdown hangs open
+    skyDrift = (shellNow.stars || shellNow.chrome) && !look.reduceMotion; // starfall's orb and chrome's lights: frozen where they are unless a bar is hovered or a dropdown hangs open
     bool orbTopLive = skyDrift && (Inside(drawnTop, input.mouse) || (AnyOpen() && cardDown));
     bool orbBotLive = skyDrift && (Inside(drawnBottom, input.mouse) || Inside(wegHit, input.mouse) || (AnyOpen() && !cardDown));
     constexpr float kStudioIn = 9, kStudioOut = 12; // the editor comes up softly and goes a little quicker

@@ -23,6 +23,7 @@
 #include "wifi.h"
 #include "gfx.h"
 #include "icons.h"
+#include "lyrics.h"
 #include "media.h"
 #include "desk.h"
 #include "mixer.h"
@@ -147,6 +148,8 @@ public:
     static constexpr float kLaunchW = 800; // and into the apps menu
     static constexpr float kQsW = 460, kCalW = 720, kNotifW = 360; // and into quick settings, or the clock: notifications beside the calendar
     static constexpr UINT_PTR kPreviewTimer = 9, kPreviewHideTimer = 10, kCoverTimer = 11, kPeekTimer = 12, kMixTimer = 14, kMixCloseTimer = 15, kGhostTimer = 16, kNotifReadTimer = 17, kPillTimer = 18, kAppsTimer = 19, kNotifPollTimer = 20, kFullTimer = 21, kPosTimer = 22, kCalWaitTimer = 24, kUpdateTimer = 25, kShadeTimer = 26, kTitleTimer = 27, kStatsTimer = 28, kFocusTimer = 29, kLangTimer = 30, kCaretTimer = 32, kClipPasteTimer = 33, kClipSaveTimer = 34, kThemeTimer = 35, kFaceTimer = 97;
+    static constexpr UINT_PTR kLyricTimer = 41; // the next lyric line starts or ends, or a lookup is still out
+    static constexpr UINT kLyricPollMs = 500; // how often an unfinished lookup is asked after
     static constexpr UINT kTitleMs = 200; // title changes: at most five top bar frames a second
     static constexpr UINT kUpdateFirstMs = 60 * 1000, kUpdateEveryMs = 6 * 60 * 60 * 1000; // a minute after start, then a few times a day
     static constexpr UINT kCalWaitMs = 5 * 60 * 1000;
@@ -195,7 +198,9 @@ private:
     bool notifPolling = false; // the quick look at the store is armed
     double hideAt = 0; // explorer showing its taskbar back: this second's count, and how many seconds in a row it kept on
     int hideCount = 0, hideStrikes = 0;
-    void CheckCovered(); // does a window sit where the island rests
+    void CheckCovered(bool lift = true); // does a window sit where the island rests; lift: also climb back over a plain window that rose above us
+    static constexpr UINT_PTR kCoverPollTimer = 36;
+    static constexpr UINT kCoverPollMs = 2000, kCoverPollSlackMs = 500; // auto-hide's slow look: a window that moved with no event we follow, out of the front or by a tiling tool, is still caught
     void HookCover(bool on);
     static void CALLBACK OnCoverEvent(HWINEVENTHOOK, DWORD ev, HWND h, LONG obj, LONG child, DWORD, DWORD);
     void ShowDesktop();
@@ -521,6 +526,8 @@ private:
     void WgChar(wchar_t ch);
     void SaveNote();
     void SaveLists();
+    void DrawTodos(const Theme& t, const D2D1_RECT_F& r); // the to-do panel's rows: a grip to drag, a box to tick, a chip for the date
+    bool TodoDueOn(int y, int m, int d) const; // anything not done due that day: the calendar marks it
     void PickPhoto();
     bool wgOpen = false;
     int wgKind = -1;
@@ -548,8 +555,11 @@ private:
     struct Todo {
         std::wstring text;
         bool done = false;
+        int due = 0; // yyyymmdd, 0 none: as astraeus dates its own
     };
     std::vector<Todo> todos;
+    int todoPick = -1, todoHeld = -1; // the to-do whose date picker is open; the one being dragged
+    float todoHeldDy = 0; // where in its row it was taken
     struct Habit {
         std::wstring name;
         int last = 0, streak = 0; // the day (yyyymmdd) last done, and days in a row
@@ -694,6 +704,7 @@ private:
 
     // bar_media.cpp
     void OnMedia();
+    void SyncLyrics(); // the line being sung now, if lyrics show in the dock; books a timer for the next change
     void SyncCover();
     void SetArtBg(bool on); // the player's album art backdrop, from our switch or astraeus'
     bool StepBars(float dt, double now);
@@ -919,6 +930,10 @@ private:
     bool wallSeeded = false; // shellSeed came from the wallpaper at wallKey: an unchanged file isn't decoded again
 
     sys::Track track;
+    std::wstring lyrKey; // the song the lyrics were asked for
+    std::wstring lyrText, lyrPrev; // the line sung now and the one before it, empty between lines: what fades in and out
+    int lyrLine = -1; // which line is sung now, -1 between lines
+    double lyrSwap = -10; // when the line last changed, on ui's clock
     bool hasTrack = false;
     uint64_t coverId = 0;
     ComPtr<IWICBitmapSource> coverSrc; // the decoded art, only until it's on the device: decoded again from the song's bytes if the device goes
