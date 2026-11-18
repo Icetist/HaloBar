@@ -9,7 +9,7 @@
 namespace sys {
 
 namespace detail { // winhttp get, as island's: one kept-alive session, cancellable from another thread
-bool HttpGet(const wchar_t* url, std::string& body, std::atomic<bool>& stop, std::atomic<void*>& slot, size_t maxBytes = 256 * 1024);
+bool HttpGet(const wchar_t* url, std::string& body, std::atomic<bool>& stop, std::atomic<void*>& slot, size_t maxBytes = 256 * 1024, std::wstring* redirect = nullptr); // redirect: not followed, where it points lands here
 void HttpCancel(std::atomic<bool>& stop, std::atomic<void*>& slot);
 }
 

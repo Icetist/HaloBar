@@ -8,6 +8,8 @@ namespace overflow {
 
 bool Open(POINT anchor, int edge, bool below); // anchor: the button's center on screen; the flyout hangs from edge (below) or sits on it; false when explorer has no chevron (its hidden icon menu is off)
 void Close();
+void WarmStart(); // a taskbar hidden since sign-in never built its tray buttons: shown (auto-hidden) so windows builds them
+bool WarmStep(bool last); // true once the chevron is found, or on the last try; the taskbar is hidden again then
 bool Shown();
 bool Is(HWND h); // explorer's flyout window, known once it has been opened
 void Place(); // over the button again: explorer puts it over its own, hidden, chevron

@@ -20,6 +20,7 @@ namespace {
 constexpr wchar_t kFlyoutClass[] = L"TopLevelWindowForOverflowXamlIsland";
 constexpr wchar_t kBridgeClass[] = L"Windows.UI.Composition.DesktopWindowContentBridge"; // the xaml content of explorer's taskbar
 constexpr wchar_t kIconsKey[] = L"Control Panel\\NotifyIconSettings"; // one subkey per icon windows has ever seen
+constexpr DWORD kBuildMs = 1000, kBuildStepMs = 100; // a click's own wait for explorer to build the buttons
 
 ComPtr<IUIAutomation> uia;
 ComPtr<IUIAutomationElement> chevron; // found once, pressed many times: the search is the slow part
@@ -78,6 +79,10 @@ bool Find() {
     if (!tray) return false;
     ShowWindow(tray, SW_SHOWNA);
     bool ok = Search();
+    for (DWORD t = 0; !ok && t < kBuildMs; t += kBuildStepMs) { // windows builds the buttons a moment after it's shown, not at once; only when the warm-up missed
+        Sleep(kBuildStepMs);
+        ok = Search();
+    }
     ShowWindow(tray, SW_HIDE);
     return ok;
 }
@@ -142,6 +147,18 @@ bool Open(POINT anchor, int edgeY, bool hang) {
 
 void Close() {
     if (Shown()) Press(); // the chevron toggles: explorer closes it as if clicked, focus and all
+}
+
+void WarmStart() {
+    if (chevron) return;
+    if (HWND tray = taskbar::ExplorerTray()) ShowWindow(tray, SW_SHOWNA);
+}
+
+bool WarmStep(bool last) {
+    bool ok = chevron || Search();
+    if (!ok && !last) return false; // still building: looked at again on the bar's timer, nothing waits
+    if (HWND tray = taskbar::ExplorerTray()) ShowWindow(tray, SW_HIDE);
+    return true;
 }
 
 bool Shown() { return flyout && IsWindow(flyout) && IsWindowVisible(flyout); }

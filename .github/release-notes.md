@@ -1,12 +1,16 @@
-## HaloBar 0.0.12
+## HaloBar 0.0.13
 
 ### New
-- **A different dock over your apps.** The dock's editor has an **On desktop / Over apps** switch on its Dock and Widgets tabs, so you can set up the dock for when a window covers the desktop.
-- **Its own body over apps.** Over apps the dock can keep the same body as on the desktop, or wear the theme, your accent color, or go clear.
-- **Own widgets over apps.** Turn on **Own widgets over apps** on the Widgets tab and the dock keeps one set of widgets on the desktop and another over your apps. It starts as a copy of your desktop widgets and stays off until you switch it on.
+- **Chrome.** A liquid metal look for the dock, with slow streaks of light across it.
+- **New widgets:** hints, to-dos, sports scores and fixtures, and US markets.
+- **Lyrics in the dock.** The song's words can play along in the dock.
 
 ### Better
-- **Undo and redo cover both places,** including both sets of widgets.
+- **Dock widgets fit the dock again.** Widgets laid out for tall tiles no longer overlap inside the dock, and the gallery shows sample numbers for widgets you haven't added yet.
+- **Auto-hide is more reliable.** The dock now goes down over a maximized window even when that window was maximized in a way Windows doesn't announce.
+- **The dock is reachable right after startup.** If a window lands over the dock's edge after sign-in, the dock moves back over it, so hovering the edge brings it up again.
+- **Checking for updates works on shared connections.** HaloBar no longer relies on GitHub's API, which allows only 60 checks an hour for everyone behind one internet address.
+- **The tray at sign-in.** HaloBar now waits for Windows' taskbar before taking over tray icons, so Windows can set up its own hidden-icons menu, which the tray button opens.
 
 > [!NOTE]
 > The executable is not code-signed yet, so Windows SmartScreen may show an "unknown publisher" warning the first time. Click **More info → Run anyway**.

@@ -74,6 +74,10 @@ constexpr WPARAM kKeyNext = 100, kKeyBack = 101, kKeyTray = 102, kKeyStart = 103
 constexpr WPARAM kTrayShowDesktop = 407; // the command explorer's taskbar runs for its show desktop corner
 constexpr UINT kIdleMs = 2500; // still this long: efficiency mode
 constexpr UINT_PTR kTrimTimer = 92; // still for longer: memory handed back to windows
+constexpr UINT_PTR kWarmTimer = 93; // windows' tray flyout made ready before the first click
+constexpr UINT kWarmDelayMs = 5000, kWarmStepMs = 250; // after taking the taskbar, then a look this often while explorer builds it
+constexpr int kWarmTries = 8;
+int warmTries = 0; // one warm-up for every dock: the tray is explorer's, shared
 constexpr UINT kTrimMs = 30000; // a wake after a short pause doesn't fault every page back in; a long one gives them up
 constexpr double kBusyFps = 60; // springs and fades: smooth at 60, and a 240 hz screen doesn't quadruple the cost
 constexpr int kDevTries = 30; // ~3 seconds of retries, 100 ms apart
@@ -1611,6 +1615,11 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         case kGhostTimer:
             SyncGhosts();
             break;
+        case kWarmTimer:
+            if (warmTries == 0) overflow::WarmStart();
+            if (overflow::WarmStep(++warmTries >= kWarmTries)) KillTimer(hwnd, kWarmTimer), warmTries = 0;
+            else SetTimer(hwnd, kWarmTimer, kWarmStepMs, nullptr);
+            break;
         case kMixTimer: { // meters ten times a second, apps and groups once
             bool slow = mixTimerMs != 100 || ++mixTicks % 10 == 0;
             DeskTick(mixTimerMs / 1000.0f, !slow);
@@ -2306,7 +2315,11 @@ void Bar::Frame() {
     if (!took) { // really showing: only now does the windows taskbar step aside
         took = true;
         SetTimer(hwnd, kReserveTimer, kReserveSettleMs, nullptr); // once windows' taskbar has fully let go, the strip at the top is ours
-        if (!moon) taskbar::Take(), ClaimTray(), HaloIcon(true), SyncKeyHook(), SetTimer(hwnd, kGhostTimer, 4000, nullptr); // apps had their chance to give us their icons: the rest come from windows' snapshot
+        if (!moon) {
+            taskbar::Take();
+            if (taskbar::ExplorerTray()) ClaimTray(); // early at sign-in explorer isn't up yet: a tray of ours there first leaves windows' own without its icons and flyout. TaskbarCreated claims it then
+            HaloIcon(true), SyncKeyHook(), SetTimer(hwnd, kGhostTimer, 4000, nullptr), SetTimer(hwnd, kWarmTimer, kWarmDelayMs, nullptr); // apps had their chance to give us their icons: the rest come from windows' snapshot
+        }
         if (!moon && prefs::ReadNum(L"TourNext", 1)) SetTimer(hwnd, kTourTimer, kTourDelayMs, nullptr); // the tour, on the main dock, while its switch is on: everyone gets it once
         if (HMODULE u = GetModuleHandleW(L"user32.dll"); u && !moon) { // user32's unnamed-in-the-docs taskman: the window asked where a minimizing window flies
             using GetTm = HWND(WINAPI*)();
