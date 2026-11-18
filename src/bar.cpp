@@ -451,10 +451,29 @@ void Bar::HaloIcon(bool show) {
     if (nid.hIcon) DestroyIcon(nid.hIcon);
 }
 
+namespace {
+bool Passing(HWND w) { // a shell flyout, a menu, a tooltip or an app's own popup: over us for a moment, never pushed under
+    wchar_t cls[48] = {};
+    GetClassNameW(w, cls, 48);
+    for (const wchar_t* c : {L"#32768", L"tooltips_class32", L"Windows.UI.Core.CoreWindow", L"XamlExplorerHostIslandWindow", L"MultitaskingViewFrame", L"ForegroundStaging",
+                             L"TopLevelWindowForOverflowXamlIsland", L"NotifyIconOverflowWindow", L"Shell_InputSwitchTopLevelWindow", L"Xaml_WindowedPopupClass", L"HaloBar", L"Astraeus"})
+        if (!wcsncmp(cls, c, wcslen(c))) return true;
+    return GetWindow(w, GW_OWNER) != nullptr;
+}
+
+constexpr LONG kEdgePx = 2; // the hover line along the dock's edge
+}
+
 void Bar::KeepOnTop() {
     if (full || !IsWindowVisible(hwnd)) return; // behind a game on purpose
+    const RECT edge = {monitor.left, monitor.bottom - kEdgePx, monitor.right, monitor.bottom};
     for (HWND w = GetWindow(hwnd, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
-        if (!IsWindowVisible(w) || (GetWindowLongW(w, GWL_EXSTYLE) & WS_EX_TOPMOST)) continue;
+        if (!IsWindowVisible(w)) continue;
+        LONG ex = GetWindowLongW(w, GWL_EXSTYLE);
+        if (ex & WS_EX_TOPMOST) { // topmost too, landed over us later (at sign-in the shell starts after us): only one that takes the edge's mouse matters
+            RECT r{}, both{};
+            if (((ex & WS_EX_LAYERED) && (ex & WS_EX_TRANSPARENT)) || !GetWindowRect(w, &r) || !IntersectRect(&both, &r, &edge) || Passing(w)) continue;
+        }
         BOOL cloaked = FALSE;
         DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
         if (cloaked) continue; // a suspended store app's frame: there, but never drawn or hit
@@ -1688,7 +1707,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             else TourStart();
             break;
         case kCoverPollTimer:
-            CheckCovered(false); // no climbing on a timer: z-order moves only answer real events
+            CheckCovered(); // lifts only when a window really sits over the dock's edge: at sign-in nothing announces the shell's late windows
             break;
         case kPeekTimer:
             peek = topPeek = false;
