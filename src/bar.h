@@ -926,6 +926,20 @@ private:
     Seed shellSeed, mediaSeed;
     Theme shellFrom, shellTo, shellNow, mediaFrom, mediaTo, mediaNow; // from/to lerp into now
     float shellT = 1, mediaT = 1;
+    // a new look pours in from the dock's own edge over the old look's last frame (bar_reveal.cpp)
+    ComPtr<ID2D1Bitmap1> revealSnap; // that frame: the top bar and the dock drawn once into memory, the old look still on
+    int revealStage = 0; // 0 idle, 1 the next frame goes into revealSnap in the old look, never to the screen
+    double revealAskAt = 0; // when the new look was asked for: a frame that never comes doesn't hold it back
+    Theme revealTo; // the new look, waiting for that frame
+    float revealT = 1; // 0 .. 1 through the pour
+    int revealStyle = 0; // the new look's own touch on the lip
+    D2D1_POINT_2F revealAt{}; // the pointer: the front leads there
+    ComPtr<ID2D1Geometry> revealOld, revealNew; // this frame's two sides of the front, in dips
+    std::vector<D2D1_POINT_2F> revealFront;
+    bool RevealWanted(const Theme& next) const; // a change worth pouring in, where it can be seen
+    bool RevealStep(float dt); // the front for this frame; true while it pours
+    void RevealApply(); // the new look in whole: the pour begins, or the crossfade when there's no frame to pour over
+    void RevealOver(); // in a pass, after its drawing: the old look past the front, and the lip
     std::wstring wallKey;
     bool wallSeeded = false; // shellSeed came from the wallpaper at wallKey: an unchanged file isn't decoded again
 

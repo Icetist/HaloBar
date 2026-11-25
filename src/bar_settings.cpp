@@ -86,7 +86,7 @@ constexpr float kTintDot = 9; // the tint's plain choices
 constexpr float kLineH = 34, kNoteH = 14, kSegRow = 32; // a switch line, a quiet note line, a segmented control with its gap
 constexpr float kHead = 30, kFoot = 10; // Box's title band above the rows, its padding below them
 constexpr float CardH(int lines, int notes, int segs = 0) { return kHead + lines * kLineH + notes * kNoteH + segs * kSegRow + kFoot; }
-constexpr float kAlertH = CardH(1, 1); // the alerts card: one switch and its note
+constexpr float kAlertH = CardH(2, 2); // the alerts card: two switches, a note under each
 constexpr float kTourH = CardH(1, 0); // the tour card: its button and switch on one line
 constexpr float kAdvHeadH = 56; // the advanced section's bar, as island's
 bool advOpen = false; // folded each launch: the everyday settings come first
@@ -921,7 +921,12 @@ void Bar::SetAlerts(const Theme& t, const D2D1_RECT_F& r) { // the song in the d
     bool p = false;
     Toggle(ui, t, "set.pills", Rect(in.left, in.top, Width(in), kLineH), L"Alert pills", cfg.pills != 0, p); // off: windows' own banners
     Note(c, t, in, in.top + kLineH, L"Off: Windows' own banners");
+    bool own = false;
+    float y = in.top + kLineH + kNoteH;
+    Toggle(ui, t, "set.pillsown", Rect(in.left, y, Width(in), kLineH), L"Keep them on HaloBar", cfg.pillsOwn != 0, own); // astraeus reads it and leaves the pills to us
+    Note(c, t, in, y + kLineH, L"Off: Astraeus shows them while it runs");
     if (p) SetPref(cfg.pills, L"Pills", cfg.pills ? 0 : 1);
+    if (own) SetPref(cfg.pillsOwn, L"PillsOwn", cfg.pillsOwn ? 0 : 1);
 }
 
 void Bar::SetClock(const Theme& t, const D2D1_RECT_F& r) {

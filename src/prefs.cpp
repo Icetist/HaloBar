@@ -107,6 +107,7 @@ Settings Load() {
     }
     s.launcher = num(L"Launcher", s.launcher, 0, 1);
     s.pills = num(L"Pills", s.pills, 0, 1);
+    s.pillsOwn = num(L"PillsOwn", s.pillsOwn, 0, 1);
     s.song = num(L"Song", s.song, 0, 1);
     s.screens = num(L"Screens", s.screens, 0, 1);
     s.align = num(L"Align", s.align, 0, 2);

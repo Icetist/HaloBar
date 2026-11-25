@@ -35,6 +35,7 @@ struct Settings { // the bar's own choices; "follow" means whatever island uses
     static constexpr int kZoomMin = 80, kZoomMax = 125, kZoomDef = 90; // the dock's size, percent: its edge dragged in its editor; compact to start
     int zoom = kZoomDef;
     int pills = 1; // 1 new notifications rise from the island as pills, and windows' own banners stay quiet; 0 windows shows its banners
+    int pillsOwn = 0; // 1 the pills rise here even while astraeus runs, and it leaves them to us; 0 it shows them while it's up
     int launcher = 1; // 1 the logo opens halobar's launcher, 0 windows' own start
     int room = 1; // the dock. 1 auto-hide: windows take the whole screen and it slips away under them; 0 always shown, its strip kept free
     int mods = 0xFFF; // which top bar modules show, a bit each: workspaces, app, tray, keyboard, bluetooth, network, volume, battery, bell, quick settings, clock

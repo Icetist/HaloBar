@@ -83,6 +83,7 @@ constexpr double kBusyFps = 60; // springs and fades: smooth at 60, and a 240 hz
 constexpr int kDevTries = 30; // ~3 seconds of retries, 100 ms apart
 constexpr UINT kDevRetryMs = 2000; // after that, a calm retry until the gpu answers again
 constexpr float kThemeSec = 0.8f; // palette crossfade, as island's
+constexpr double kRevealWait = 0.5; // seconds a new look waits for the old look's frame to pour over: past that it just crossfades
 constexpr double kSelfCallSec = 3; // our own TaskbarCreated echoes back for a moment
 constexpr UINT kMenuRestart = 1, kMenuExit = 2, kMenuSettings = 3, kMenuStart = 6, kMenuUpdate = 7, kMenuEdit = 8;
 
@@ -1066,6 +1067,8 @@ bool Bar::EnsureDev() {
 }
 
 void Bar::FreeDev() {
+    revealSnap.Reset(); // made on this device: a pour under way just ends, the new look already whole
+    revealOld.Reset(), revealNew.Reset();
     FreeGlass();
     canvas.reset();
     icons.Drop();
@@ -1279,7 +1282,21 @@ void Bar::SyncLook() {
         SyncWall(); // the same file as last time is not decoded again: an island setting change costs nothing here
     }
     SyncWallTone();
-    SetShell(MakeShell());
+    Theme next = MakeShell();
+    if (revealStage == 1) { // already waiting on the old look's frame: this is the look it brings in
+        revealTo = next;
+        if (Seconds() - revealAskAt > kRevealWait) RevealApply(); // the frame never came: no holding the look back
+        return;
+    }
+    if (RevealWanted(next)) { // the next frame is drawn in the old look into memory, then the new one pours in over it
+        revealTo = next;
+        revealStage = 1;
+        revealAskAt = Seconds();
+        fullNext = allNext = true;
+        Redraw();
+        return;
+    }
+    SetShell(next);
     if (coverTint) SetMedia(Make(mediaSeed));
 }
 
@@ -1321,6 +1338,10 @@ bool Bar::SyncWall() {
 
 namespace {
 bool SameTheme(const Theme& a, const Theme& b) { return memcmp(&a, &b, offsetof(Theme, glass)) == 0 && a.glass == b.glass; } // colors are plain floats: no padding before glass
+}
+
+bool Bar::RevealWanted(const Theme& next) const {
+    return ctx && !full && !look.reduceMotion && IsWindowVisible(hwnd) && !SameTheme(next, shellTo) && (sink < 0.999f || drawnTop.right > drawnTop.left); // the dock or the top bar is there to see it
 }
 
 void Bar::SetShell(const Theme& t) {
@@ -1372,7 +1393,7 @@ void Bar::FollowNotifs() {
     LoadNotifs();
 }
 
-bool Bar::PillsLive() const { return !lead && cfg.pills && !full && !Quiet() && !FindWindowW(L"AstraeusHost", nullptr); } // astraeus running: it shows the notification, not us
+bool Bar::PillsLive() const { return !lead && cfg.pills && !full && !Quiet() && (cfg.pillsOwn || !FindWindowW(L"AstraeusHost", nullptr)); } // astraeus running: it shows the notification, not us, unless they're kept here
 
 void Bar::OnPins() {
     pins::Rearm(pinsEv);
@@ -1929,7 +1950,7 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             else if (fresh && top > pillSeen) { // something new: a pill, unless the user asked for quiet or is in a fullscreen app
                 pillSeen = top;
                 if (Hush()) Banners(true); // an app notifying for the first time has a switch of its own now: its next banner stays hidden too
-                if (cfg.pills && !moon && !Quiet() && !full && !FindWindowW(L"AstraeusHost", nullptr)) { // astraeus running: it shows the notification, not us
+                if (cfg.pills && !moon && !Quiet() && !full && (cfg.pillsOwn || !FindWindowW(L"AstraeusHost", nullptr))) { // astraeus running: it shows the notification, not us, unless they're kept here
                     pillNote = *fresh;
                     pillUp = true;
                     SetTimer(hwnd, kPillTimer, kPillMs, nullptr);
@@ -2077,6 +2098,21 @@ LRESULT Bar::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 bool Bar::Pass(const D2D1_RECT_F& area, const std::function<void()>& draw) {
+    if (revealStage == 1) { // the old look's frame, into memory instead of onto the screen: the new look will pour in over it
+        if (!revealSnap) return true;
+        ctx->SetTarget(revealSnap.Get());
+        ctx->SetDpi(96, 96);
+        ctx->BeginDraw();
+        ctx->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+        ctx->PushAxisAlignedClip(area, D2D1_ANTIALIAS_MODE_ALIASED);
+        ctx->Clear(D2D1::ColorF(0, 0, 0, 0));
+        ui.Rebase();
+        draw();
+        ctx->PopAxisAlignedClip();
+        HRESULT snapHr = ctx->EndDraw();
+        ctx->SetTarget(nullptr);
+        return snapHr != D2DERR_RECREATE_TARGET;
+    }
     RECT px = {(LONG)std::floor(area.left * scale), (LONG)std::floor(area.top * scale), (LONG)std::ceil(area.right * scale), (LONG)std::ceil(area.bottom * scale)};
     px.left = (std::max)(px.left, 0L), px.top = (std::max)(px.top, 0L);
     px.right = (std::min)(px.right, (LONG)winPxW), px.bottom = (std::min)(px.bottom, (LONG)winPxH);
@@ -2098,7 +2134,10 @@ bool Bar::Pass(const D2D1_RECT_F& area, const std::function<void()>& draw) {
     ctx->PushAxisAlignedClip({px.left / scale, px.top / scale, px.right / scale, px.bottom / scale}, D2D1_ANTIALIAS_MODE_ALIASED);
     ctx->Clear(D2D1::ColorF(0, 0, 0, 0)); // transparent: the desktop shows through around the toolbar and the dock
     ui.Rebase(); // hit rects are kept in dips, whatever this pass's atlas offset
+    bool pour = revealT < 1 && revealSnap && revealNew; // a new look pouring in: drawn only on its side of the front
+    if (pour) ctx->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), revealNew.Get()), nullptr);
     draw();
+    if (pour) ctx->PopLayer(), RevealOver();
     ctx->PopAxisAlignedClip();
     HRESULT hr = ctx->EndDraw();
     ctx->SetTarget(nullptr);
@@ -2133,6 +2172,7 @@ void Bar::DrawCard(const Theme& t, ID2D1Geometry* shape) { // the open dropdown,
 
 void Bar::Frame() {
     if (full) { // hidden behind a fullscreen app: no frames until it's gone
+        if (revealStage == 1) RevealApply(); // nobody would see it pour: the look just comes in
         needsFrame = false;
         return;
     }
@@ -2146,6 +2186,12 @@ void Bar::Frame() {
     }
     SyncCover();
     bool themes = StepTheme(dt);
+    if (revealStage == 1 && !revealSnap) { // the old look's frame goes here, the whole window's size, once
+        D2D1_BITMAP_PROPERTIES1 bp = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+        if (FAILED(ctx->CreateBitmap({(UINT32)winPxW, (UINT32)winPxH}, nullptr, 0, bp, &revealSnap))) RevealApply(); // no room for it: the plain crossfade
+    }
+    if (revealStage == 1) allNext = true; // the whole old look, top bar and dock
+    themes = RevealStep(dt) || revealStage == 1 || themes; // a pour under way keeps every frame whole
     bool springs = StepSprings(dt);
     bool easing = Layout(dt); // the toolbar's, the dock's and a dropdown's bounds for this frame, known before anything is drawn
     skyDrift = (shellNow.stars || shellNow.chrome) && !look.reduceMotion; // starfall's orb and chrome's lights: frozen where they are unless a bar is hovered or a dropdown hangs open
@@ -2292,6 +2338,11 @@ void Bar::Frame() {
     if (!ok) {
         FreeDev();
         Retry();
+        return;
+    }
+    if (revealStage == 1) { // that was the old look, into memory only: nothing shown, the new look comes in on the next frame
+        RevealApply();
+        fullNext = allNext = needsFrame = true;
         return;
     }
     bool shrank = drawnTop.bottom > top.bottom + 1 || drawnBottom.top < bottom.top - 1 || drawnBottom.left < bottom.left - 1 || drawnBottom.right > bottom.right + 1;
